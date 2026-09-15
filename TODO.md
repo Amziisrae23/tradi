@@ -3,17 +3,21 @@
 Última actualización: 2026-09-15
 
 ## 📌 Resumen del Estado Actual
-- Repositorio local inicializado y configurado para sincronización entre Laptop Trabajo y Laptop Casa.
-- Git y reglas de automatización de sesión establecidas.
+- Repositorio remoto `origin` vinculado y sincronizado exitosamente con GitHub (`git@github.com:Amziisrae23/tradi.git`).
+- Configuración de identidad y autenticación SSH completada en Laptop Trabajo.
+- Reglas de sesión de Antigravity activas.
 
-## 🚀 Tareas Pendientes (Roadmap)
-- [ ] Definir el stack tecnológico y la arquitectura inicial del proyecto (Backend / Frontend / Base de datos).
-- [ ] Crear el repositorio remoto en GitHub (`https://github.com/Amziisrae23/tradi`) y vincular el remoto `origin`.
-- [ ] Realizar el primer push inicial a GitHub.
-- [ ] Clonar el repositorio en la Laptop de Casa y verificar la sincronización de sesión.
+## 🚀 Próximos Pasos (Laptop Casa y Desarrollo)
+- [ ] Clonar el repositorio en la **Laptop de Casa**:
+  - Generar SSH key en casa o usar HTTPS.
+  - Clonar con `git clone git@github.com:Amziisrae23/tradi.git`.
+  - Abrir Antigravity y probar el comando *"Continuemos"*.
+- [ ] Definir el stack tecnológico y la arquitectura inicial del proyecto (Backend / Frontend / Base de datos / APIs).
+- [ ] Crear la estructura de carpetas y dependencias base de la aplicación.
 
 ## ✅ Tareas Completadas
 - [x] Configuración global de identidad Git (`Amziisrae23` / `amzil9719@gmail.com`).
-- [x] Generación de clave SSH para autenticación segura en GitHub.
+- [x] Generación y vinculación de clave SSH en GitHub.
 - [x] Creación de `.gitignore` integral (Node, Python, .NET, secretos y temporales).
-- [x] Definición de reglas de cierre automático de sesión ("terminamos") para Antigravity.
+- [x] Creación de `README.md`, `.env.example`, `GEMINI.md`, `AGENTS.md` y reglas `.gemini/rules/session_workflow.md`.
+- [x] Inicialización del repositorio local y primer `git push` a `origin/main`.
