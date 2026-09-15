@@ -56,3 +56,7 @@ secrets.json
 *~
 .DS_Store
 Thumbs.db
+
+# Output files
+output/charts/*.png
+!output/charts/.gitkeep

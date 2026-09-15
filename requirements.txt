@@ -1,0 +1,20 @@
+﻿# Networking & WebSockets
+websockets>=12.0
+aiohttp>=3.9.0
+orjson>=3.9.0
+requests>=2.31.0
+
+# Data Analysis & High Performance Math
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.12.0
+
+# Visualization & Charts
+matplotlib>=3.8.0
+mplfinance>=0.12.10b0
+pillow>=10.2.0
+
+# Configuration & Utilities
+python-dotenv>=1.0.0
+pydantic>=2.6.0
+rich>=13.7.0
