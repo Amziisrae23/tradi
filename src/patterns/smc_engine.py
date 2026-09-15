@@ -11,7 +11,7 @@ from src.intelligence.ml_model import brain
 from config.settings import settings
 
 class SMCEngine:
-    """Motor de análisis institucional SMC impulsado por Machine Learning y Microestructura."""
+    """Motor Cuantitativo Multi-Timeframe Institucional SMC & Machine Learning."""
 
     def __init__(self, atr_period: int = 14):
         self.atr_period = atr_period
@@ -23,38 +23,46 @@ class SMCEngine:
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         return tr.rolling(window=self.atr_period).mean().bfill()
 
-    def analyze(self, symbol: str, df: pd.DataFrame) -> Dict[str, Any]:
-        if len(df) < 30:
+    def analyze(self, symbol: str, df_mtf: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        """
+        Ejecuta el análisis cuantitativo multi-temporal:
+        - HTF (4H): Determina el sesgo institucional macro.
+        - MTF (15m): Identifica puntos de interés (Order Blocks, FVGs, Sweeps).
+        - ML Brain: Evalúa el vector continuo de 24 características y filtra con P >= 70%.
+        """
+        if len(df_mtf) < 30:
             return {"symbol": symbol, "status": "insufficient_data", "setups": []}
 
-        df = df.copy()
+        df = df_mtf.copy()
         df['atr'] = self.calculate_atr(df)
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # Extraer vector de 25 características continuas para el modelo de ML
-        feat_df = extract_features(df, last_n=1)
+        # Extraer vector institucional de 24 características con alineación 4H
+        feat_df = extract_features(df, df_htf=df_htf, last_n=1)
         last_feats = feat_df.iloc[-1] if not feat_df.empty else pd.Series(dtype=float)
 
-        # Detección de estructuras institucionales
+        # Determinar sesgo macro de 4H
+        htf_bias = last_feats.get('feat_htf_trend_align', 0.0)
+
+        # Detección de estructuras institucionales en 15m
         swing_highs, swing_lows = detect_swing_points(df, left=4, right=4)
         fvgs = detect_fvgs(df, df['atr'])
         order_blocks = detect_order_blocks(df, fvgs, df['atr'])
         sweeps = detect_liquidity_sweeps(df, swing_highs, swing_lows)
 
         # Evaluar setups candidatos
-        raw_setups = self._find_candidate_setups(symbol, df, fvgs, order_blocks, sweeps, swing_highs, swing_lows)
+        raw_setups = self._find_candidate_setups(symbol, df, fvgs, order_blocks, sweeps, swing_highs, swing_lows, htf_bias)
         
-        # Filtro de Machine Learning Inteligente
+        # Filtro estricto de Machine Learning Probabilístico
         validated_setups = []
         for s in raw_setups:
-            # El cerebro de ML calcula la probabilidad de éxito empírica
             ml_prob = brain.predict_probability(s, last_feats)
             s.confidence_score = ml_prob
 
-            # Filtro riguroso de IA: solo setups con confluencia ML >= 75%
+            # Solo permitir setups con probabilidad matemática robusta (>= 70%)
             if ml_prob >= settings.MIN_ML_CONFIDENCE:
-                s.reasons.append(f"Validación de Machine Learning: Probabilidad estimada de éxito {ml_prob}%")
+                s.reasons.append(f"Validación Cuantitativa ML: Probabilidad estadística estimada de {ml_prob}%")
                 brain.record_signal(s, last_feats.to_dict())
                 validated_setups.append(s)
 
@@ -66,6 +74,7 @@ class SMCEngine:
             "sweeps": sweeps,
             "swing_highs": swing_highs,
             "swing_lows": swing_lows,
+            "htf_bias": "BULLISH" if htf_bias > 0 else "BEARISH" if htf_bias < 0 else "NEUTRAL",
             "setups": validated_setups
         }
 
@@ -77,7 +86,8 @@ class SMCEngine:
         order_blocks: List[OrderBlock],
         sweeps: List[LiquiditySweep],
         swing_highs: pd.Series,
-        swing_lows: pd.Series
+        swing_lows: pd.Series,
+        htf_bias: float
     ) -> List[TradeSetup]:
         setups: List[TradeSetup] = []
         n = len(df)
@@ -86,13 +96,14 @@ class SMCEngine:
         current_atr = df['atr'].iloc[last_idx]
 
         for ob in reversed(order_blocks):
-            if last_idx - ob.candle_idx > 35:
+            if last_idx - ob.candle_idx > 40:
                 continue
 
             reasons = []
 
-            # Setup LONG
-            if ob.direction == 1 and not ob.invalidated:
+            # === SETUP LONG (COMPRA) ===
+            # Filtro institucional: no abrir compras si la tendencia macro 4H es fuertemente bajista
+            if ob.direction == 1 and not ob.invalidated and htf_bias >= -0.5:
                 if df['low'].iloc[last_idx] <= (ob.top * 1.002) and current_price >= ob.bottom:
                     reasons.append(f"Rebote en Order Block Alcista (${ob.bottom:.2f} - ${ob.top:.2f})")
                     
@@ -103,6 +114,9 @@ class SMCEngine:
                     recent_fvgs = [f for f in fvgs if f.direction == 1 and not f.mitigated and (last_idx - f.candle_idx) <= 20]
                     if recent_fvgs:
                         reasons.append(f"Confluencia con Fair Value Gap (FVG) en ${recent_fvgs[-1].mid:.2f}")
+
+                    if htf_bias > 0:
+                        reasons.append("Alineación a favor de la tendencia Macro 4H")
 
                     entry = current_price
                     sl = ob.bottom - (settings.ATR_BUFFER_MULT * current_atr)
@@ -134,8 +148,9 @@ class SMCEngine:
                                 reasons=reasons
                             ))
 
-            # Setup SHORT
-            elif ob.direction == -1 and not ob.invalidated:
+            # === SETUP SHORT (VENTA) ===
+            # Filtro institucional: no abrir ventas si la tendencia macro 4H es fuertemente alcista
+            elif ob.direction == -1 and not ob.invalidated and htf_bias <= 0.5:
                 if df['high'].iloc[last_idx] >= (ob.bottom * 0.998) and current_price <= ob.top:
                     reasons.append(f"Rechazo en Order Block Bajista (${ob.bottom:.2f} - ${ob.top:.2f})")
 
@@ -146,6 +161,9 @@ class SMCEngine:
                     recent_fvgs = [f for f in fvgs if f.direction == -1 and not f.mitigated and (last_idx - f.candle_idx) <= 20]
                     if recent_fvgs:
                         reasons.append(f"Confluencia con Fair Value Gap (FVG) en ${recent_fvgs[-1].mid:.2f}")
+
+                    if htf_bias < 0:
+                        reasons.append("Alineación a favor de la tendencia Macro 4H")
 
                     entry = current_price
                     sl = ob.top + (settings.ATR_BUFFER_MULT * current_atr)

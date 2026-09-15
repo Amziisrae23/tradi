@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import pandas as pd
 from typing import List
 from src.patterns.types import OrderBlock, FVG
@@ -58,12 +58,14 @@ def detect_order_blocks(df: pd.DataFrame, fvgs: List[FVG], atr_series: pd.Series
             if ob.direction == 1:
                 if lows[k] <= ob.top and not ob.mitigated:
                     ob.mitigated = True
+                    ob.mitigation_idx = k
                 if closes[k] < ob.bottom:
                     ob.invalidated = True
                     break
             elif ob.direction == -1:
                 if highs[k] >= ob.bottom and not ob.mitigated:
                     ob.mitigated = True
+                    ob.mitigation_idx = k
                 if closes[k] > ob.top:
                     ob.invalidated = True
                     break

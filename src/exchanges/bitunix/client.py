@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import requests
 import pandas as pd
 from typing import Dict, Any, Optional
@@ -21,58 +21,82 @@ class BitunixClient(BaseExchangeClient):
     def get_historical_klines(self, symbol: str, interval: str = "15m", limit: int = 200) -> pd.DataFrame:
         """
         Descarga velas históricas (Klines) de futuros de Bitunix.
+        Soporta paginación automática hacia atrás con endTime para límites superiores a 200.
         Retorna DataFrame con columnas: [timestamp, open, high, low, close, volume].
         """
         clean_symbol = symbol.replace("/", "").replace("-", "").upper()
         url = f"{self.base_url}/api/v1/futures/market/kline"
-        params = {
-            "symbol": clean_symbol,
-            "interval": interval,
-            "limit": min(limit, 500)
-        }
+        all_raw_klines = []
+        end_time = None
+        remaining = limit
 
         try:
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            while remaining > 0:
+                batch_limit = min(200, remaining)
+                params = {
+                    "symbol": clean_symbol,
+                    "interval": interval,
+                    "limit": batch_limit
+                }
+                if end_time:
+                    params["endTime"] = end_time
 
-            if "data" not in data or not data["data"]:
+                response = self.session.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+
+                if "data" not in data or not data["data"]:
+                    break
+
+                batch = data["data"]
+                if not isinstance(batch, list) or len(batch) == 0:
+                    break
+
+                all_raw_klines.extend(batch)
+                remaining -= len(batch)
+
+                # Extraer el timestamp más antiguo del lote para la siguiente página
+                min_ts = min(int(x.get("time", x.get("t", 0))) for x in batch if (x.get("time") or x.get("t")))
+                if min_ts <= 0 or (end_time is not None and min_ts >= end_time):
+                    break
+                end_time = min_ts - 1
+
+                if len(batch) < batch_limit:
+                    break
+
+            if not all_raw_klines:
                 logger.warning(f"No se recibieron datos de velas para {clean_symbol} en {interval}")
                 return pd.DataFrame()
 
-            raw_klines = data["data"]
-            if isinstance(raw_klines, list) and len(raw_klines) > 0:
-                df = pd.DataFrame(raw_klines)
-                
-                # Mapeo de nombres según la API de Bitunix
-                column_mapping = {
-                    "time": "timestamp",
-                    "t": "timestamp",
-                    "o": "open",
-                    "h": "high",
-                    "l": "low",
-                    "c": "close",
-                    "baseVol": "volume",
-                    "quoteVol": "quote_volume",
-                    "vol": "volume",
-                    "v": "volume"
-                }
-                df = df.rename(columns=column_mapping)
+            df = pd.DataFrame(all_raw_klines)
+            
+            # Mapeo de nombres según la API de Bitunix
+            column_mapping = {
+                "time": "timestamp",
+                "t": "timestamp",
+                "o": "open",
+                "h": "high",
+                "l": "low",
+                "c": "close",
+                "baseVol": "volume",
+                "quoteVol": "quote_volume",
+                "vol": "volume",
+                "v": "volume"
+            }
+            df = df.rename(columns=column_mapping)
 
-                if "volume" not in df.columns:
-                    df["volume"] = 0.0
+            if "volume" not in df.columns:
+                df["volume"] = 0.0
 
-                # Conversión numérica de columnas
-                for col in ["open", "high", "low", "close", "volume"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
+            # Conversión numérica de columnas
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-                df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"], errors="coerce"), unit="ms")
-                # Ordenar cronológicamente (de la más antigua a la más reciente)
-                df = df.sort_values("timestamp").reset_index(drop=True)
-                return df[["timestamp", "open", "high", "low", "close", "volume"]]
-
-            return pd.DataFrame()
+            df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"], errors="coerce"), unit="ms")
+            # Deduplicar y ordenar cronológicamente
+            df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+            return df[["timestamp", "open", "high", "low", "close", "volume"]].tail(limit).reset_index(drop=True)
 
         except Exception as e:
             logger.error(f"Error al obtener velas de Bitunix para {clean_symbol}: {e}")

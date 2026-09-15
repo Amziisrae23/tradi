@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import io
 
 if sys.platform.startswith("win"):
@@ -81,22 +81,25 @@ async def process_telegram_actions(telegram: TelegramNotifier):
             telegram.send_message("🗑️ Señal descartada.")
 
 async def scan_market(client, smc, renderer, telegram):
-    """Escanea las 10 criptomonedas más líquidas con Machine Learning y SMC."""
-    logger.info(f"Iniciando escaneo inteligente de {len(settings.DEFAULT_SYMBOLS)} pares...")
+    """Escanea las 10 criptomonedas más líquidas con Multi-Timeframe (4H + 15m), Machine Learning y SMC."""
+    logger.info(f"Iniciando escaneo inteligente Multi-Timeframe de {len(settings.DEFAULT_SYMBOLS)} pares...")
     app_state["last_scan"] = datetime.now(timezone.utc).isoformat()
 
     all_setups = []
     for sym in settings.DEFAULT_SYMBOLS:
         try:
-            df = client.get_historical_klines(sym, interval=settings.MTF_INTERVAL, limit=120)
-            if df.empty or len(df) < 30:
+            # Descarga simultánea de HTF (4H) para tendencia macro y MTF (15m) para POI / gatillo
+            df_4h = client.get_historical_klines(sym, interval=settings.HTF_INTERVAL, limit=100)
+            df_15m = client.get_historical_klines(sym, interval=settings.MTF_INTERVAL, limit=120)
+            
+            if df_15m.empty or len(df_15m) < 30:
                 continue
 
-            analysis = smc.analyze(sym, df)
+            analysis = smc.analyze(sym, df=df_15m, df_htf=df_4h if not df_4h.empty else None)
             setups = analysis.get("setups", [])
 
             for s in setups:
-                chart_path = renderer.render_trade_setup(df, s)
+                chart_path = renderer.render_trade_setup(df_15m, s)
                 mc = run_monte_carlo_simulation(win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
                 signal_text = SignalGenerator.format_signal_text(s, mc)
                 all_setups.append((s, signal_text, chart_path))
@@ -110,9 +113,9 @@ async def scan_market(client, smc, renderer, telegram):
 
     if all_setups:
         app_state["signals_found"] += len(all_setups)
-        logger.info(f"¡{len(all_setups)} señales de alta probabilidad detectadas y despachadas!")
+        logger.info(f"¡{len(all_setups)} señales Multi-Timeframe validadas por IA y despachadas!")
     else:
-        logger.info("Escaneo completado: mercado en balance, esperando confluencia institucional...")
+        logger.info("Escaneo completado: mercado en balance o filtrado por alineación macro 4H...")
 
 async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds: int = 60):
     logger.info("Iniciando loop continuo 24/7 con Machine Learning y 1-Clic Telegram...")

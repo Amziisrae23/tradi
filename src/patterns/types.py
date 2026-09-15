@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass, field
+from dataclasses import dataclass, field
 from typing import Optional, List
 from datetime import datetime
 
@@ -11,6 +11,7 @@ class FVG:
     candle_idx: int
     timestamp: Optional[datetime] = None
     mitigated: bool = False
+    mitigation_idx: Optional[int] = None
 
 @dataclass
 class OrderBlock:
@@ -21,6 +22,7 @@ class OrderBlock:
     candle_idx: int
     timestamp: Optional[datetime] = None
     mitigated: bool = False
+    mitigation_idx: Optional[int] = None
     invalidated: bool = False
 
 @dataclass
