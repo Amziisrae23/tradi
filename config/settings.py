@@ -16,8 +16,19 @@ class Settings(BaseModel):
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    # Monitored Trading Pairs
-    DEFAULT_SYMBOLS: List[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    # Top 10 Monitored Liquid Cryptocurrency Futures Pairs
+    DEFAULT_SYMBOLS: List[str] = [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "SUIUSDT",
+        "ADAUSDT",
+        "AVAXUSDT",
+        "LINKUSDT",
+        "BNBUSDT"
+    ]
     
     # Timeframes for Multi-Timeframe Analysis
     HTF_INTERVAL: str = "4h"   # Higher Timeframe (Tendencia Macro)
@@ -25,10 +36,11 @@ class Settings(BaseModel):
     LTF_INTERVAL: str = "5m"   # Lower Timeframe (Entrada / Gatillo)
 
     # Risk Management
+    FIXED_RISK_USD: float = 10.0        # $10 USD de riesgo fijo por operación (2% de $500)
     MIN_RISK_REWARD_RATIO: float = 2.0  # R:R mínimo para emitir señal
-    MAX_RISK_PER_TRADE_PCT: float = 2.0 # 2% max balance risk
+    MIN_ML_CONFIDENCE: float = 75.0     # 75% de confianza mínima del modelo ML
     ATR_PERIOD: int = 14
-    ATR_BUFFER_MULT: float = 0.35      # Buffer de seguridad para Stop Loss
+    ATR_BUFFER_MULT: float = 0.35       # Buffer de seguridad para Stop Loss
     
     # Output paths
     CHARTS_DIR: str = os.path.join(os.getcwd(), "output", "charts")

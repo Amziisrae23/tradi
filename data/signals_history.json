@@ -1,0 +1,24 @@
+[
+  {
+    "timestamp": "2026-09-15T19:16:30.581247",
+    "symbol": "BNBUSDT",
+    "direction": "LONG",
+    "entry_price": 720.94,
+    "stop_loss": 713.41,
+    "tp2": 743.52,
+    "confidence_score": 93.4,
+    "features": {
+      "feat_norm_atr": 0.005297647119435343,
+      "feat_rvol": 1.195552572452154,
+      "feat_rsi": 52.1330198186095,
+      "feat_dist_ema20": 0.0013209720603048682,
+      "feat_dist_ema50": 0.0015418209149747652,
+      "feat_dist_ema200": 0.00031704630344841025,
+      "feat_trend_alignment": 0.0,
+      "feat_body_ratio": 0.552995391705086,
+      "feat_wick_ratio": -0.02304147465438295
+    },
+    "status": "OPEN",
+    "outcome": null
+  }
+]
