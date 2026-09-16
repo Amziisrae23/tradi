@@ -4,10 +4,12 @@ aiohttp>=3.9.0
 orjson>=3.9.0
 requests>=2.31.0
 
-# Data Analysis & High Performance Math
+# Data Analysis, Math & Machine Learning
 numpy>=1.26.0
 pandas>=2.2.0
 scipy>=1.12.0
+scikit-learn>=1.4.0
+joblib>=1.3.0
 
 # Visualization & Charts
 matplotlib>=3.8.0
