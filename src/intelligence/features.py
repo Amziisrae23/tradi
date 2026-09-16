@@ -140,8 +140,18 @@ def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, la
             np.where((htf_close < htf_ema50) & (htf_ema50 < htf_ema200), -1.0, 0.0)
         )
         if 'timestamp' in df.columns and 'timestamp' in df_htf.columns and len(df) > 1:
-            htf_df_temp = pd.DataFrame({'timestamp': df_htf['timestamp'], 'htf_bias': htf_bias_series})
-            merged = pd.merge_asof(df[['timestamp']].sort_values('timestamp'), htf_df_temp.sort_values('timestamp'), on='timestamp', direction='backward')
+            # Normalizar timestamps para evitar incompatibilidades de zona horaria en merge_asof
+            df_ts = pd.to_datetime(df['timestamp'])
+            if getattr(df_ts.dt, 'tz', None) is not None:
+                df_ts = df_ts.dt.tz_localize(None)
+            htf_ts = pd.to_datetime(df_htf['timestamp'])
+            if getattr(htf_ts.dt, 'tz', None) is not None:
+                htf_ts = htf_ts.dt.tz_localize(None)
+
+            df_temp = pd.DataFrame({'_ts': df_ts, '_orig_idx': np.arange(len(df))}).sort_values('_ts')
+            htf_df_temp = pd.DataFrame({'_ts': htf_ts, 'htf_bias': htf_bias_series}).sort_values('_ts')
+            merged = pd.merge_asof(df_temp, htf_df_temp, on='_ts', direction='backward')
+            merged = merged.sort_values('_orig_idx')
             df['feat_htf_trend_align'] = merged['htf_bias'].fillna(0.0).values
         else:
             last_bias = float(htf_bias_series[-1])

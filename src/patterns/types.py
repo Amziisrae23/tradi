@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 @dataclass
 class FVG:
@@ -48,5 +48,5 @@ class TradeSetup:
     rr_tp3: float
     confidence_score: float
     reasons: List[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     chart_path: Optional[str] = None

@@ -108,12 +108,23 @@ class AdaptiveTradingBrain:
                 sample_dict["feat_direction"] = 1.0 if setup.direction == "LONG" else -1.0
                 sample_dict["feat_rr_tp1"] = float(setup.rr_tp1)
                 sample_dict["feat_rr_tp2"] = float(setup.rr_tp2)
-                sample_dict["feat_has_sweep"] = 1.0 if any("Barrido" in r for r in setup.reasons) else 0.0
-                sample_dict["feat_has_fvg"] = 1.0 if any("Fair Value Gap" in r for r in setup.reasons) else 0.0
-                sample_dict["feat_has_ob"] = 1.0 if any("Order Block" in r for r in setup.reasons) else 0.0
+                sample_dict["feat_has_sweep"] = 1.0 if any(any(w in r for w in ["Barrido", "Sweep", "SSL", "BSL"]) for r in setup.reasons) else 0.0
+                sample_dict["feat_has_fvg"] = 1.0 if any(any(w in r for w in ["Fair Value Gap", "FVG", "Desbalance"]) for r in setup.reasons) else 0.0
+                sample_dict["feat_has_ob"] = 1.0 if any(any(w in r for w in ["Order Block", "OB"]) for r in setup.reasons) else 0.0
 
                 df_sample = pd.DataFrame([sample_dict])[self.model_features].fillna(0.0)
-                proba = float(self.ml_pipeline.predict_proba(df_sample)[0, 1] * 100.0)
+                
+                if hasattr(self.ml_pipeline, "predict_proba"):
+                    probs = self.ml_pipeline.predict_proba(df_sample)[0]
+                    classes = getattr(self.ml_pipeline, "classes_", [0, 1])
+                    if 1 in classes:
+                        pos_idx = list(classes).index(1)
+                        proba = float(probs[pos_idx] * 100.0)
+                    else:
+                        proba = float(probs[-1] * 100.0)
+                else:
+                    proba = 75.0
+
                 calibrated_percentage = float(np.clip(proba, 25.0, 96.0))
                 return round(calibrated_percentage, 1)
             except Exception as ex:
@@ -148,9 +159,11 @@ class AdaptiveTradingBrain:
         if adx > 25.0:
             raw_score += self.weights["feat_adx_14"] * min((adx - 25.0) / 25.0, 1.0)
 
-        if any("Barrido" in r for r in setup.reasons):
+        if any(any(w in r for w in ["Barrido", "Sweep", "SSL", "BSL"]) for r in setup.reasons):
             raw_score += 2.0
-        if any("Fair Value Gap" in r for r in setup.reasons):
+        if any(any(w in r for w in ["Fair Value Gap", "FVG", "Desbalance"]) for r in setup.reasons):
+            raw_score += 1.5
+        if any(any(w in r for w in ["Order Block", "OB"]) for r in setup.reasons):
             raw_score += 1.5
         if setup.rr_tp2 >= 3.0:
             raw_score += 1.0

@@ -6,8 +6,10 @@ from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timezone
 
 if sys.platform.startswith("win"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -216,9 +218,9 @@ class MLModelTrainer:
                     sample_dict["feat_direction"] = 1.0 if s.direction == "LONG" else -1.0
                     sample_dict["feat_rr_tp1"] = float(s.rr_tp1)
                     sample_dict["feat_rr_tp2"] = float(s.rr_tp2)
-                    sample_dict["feat_has_sweep"] = 1.0 if any("Barrido" in r or "Sweep" in r for r in s.reasons) else 0.0
-                    sample_dict["feat_has_fvg"] = 1.0 if any("Fair Value Gap" in r or "FVG" in r for r in s.reasons) else 0.0
-                    sample_dict["feat_has_ob"] = 1.0 if any("Order Block" in r for r in s.reasons) else 0.0
+                    sample_dict["feat_has_sweep"] = 1.0 if any(any(w in r for w in ["Barrido", "Sweep", "SSL", "BSL"]) for r in s.reasons) else 0.0
+                    sample_dict["feat_has_fvg"] = 1.0 if any(any(w in r for w in ["Fair Value Gap", "FVG", "Desbalance"]) for r in s.reasons) else 0.0
+                    sample_dict["feat_has_ob"] = 1.0 if any(any(w in r for w in ["Order Block", "OB"]) for r in s.reasons) else 0.0
 
                     target = 1 if outcome in ("FULL_WIN", "BE_WIN") and pnl_r >= 0.50 else 0
 

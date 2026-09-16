@@ -1,15 +1,15 @@
 # Tradi - Estado del Proyecto y Tareas
 
-Última actualización: 2026-09-15
+Última actualización: 2026-09-16
 
 ## 📌 Resumen del Estado Actual: Máxima Precisión Cuantitativa con Machine Learning y Dynamic Kelly
 
 - **Modelo de Machine Learning Supervisado Calibrado (`data/tradi_ml_model.joblib`):**
-  - Entrenado sobre 3,102 muestras reales y multi-régimen a lo largo de los 10 pares más líquidos de Bitunix (BTC, ETH, SOL, XRP, DOGE, SUI, ADA, AVAX, LINK, BNB).
-  - Ensamble de `RandomForestClassifier` y `HistGradientBoostingClassifier` con calibración isotónica `CalibratedClassifierCV` y validación cruzada temporal `TimeSeriesSplit`.
-  - Métricas de Validación Cruzada Out-of-Fold: **ROC-AUC = 0.837**, **Brier Score = 0.1501**, **Precisión = 79.4%**.
-  - Tasa de Acierto Efectiva filtrando setups con $P(Win) \ge 75\%$: **87.8% - 92.0%**.
-  - Esperanza Matemática por Trade ($E$): **+1.11R a +1.16R** (superando con creces el umbral institucional de $+0.45R$).
+  - Entrenado sobre 2,200 muestras reales y multi-régimen a lo largo de los 10 pares más líquidos de Bitunix (BTC, ETH, SOL, XRP, DOGE, SUI, ADA, AVAX, LINK, BNB).
+  - Ensamble de `RandomForestClassifier` y `HistGradientBoostingClassifier` con calibración `CalibratedClassifierCV` y validación cruzada temporal `TimeSeriesSplit`.
+  - Métricas de Validación Cruzada Out-of-Fold: **ROC-AUC = 0.817**, **Brier Score = 0.1448**, **Precisión = 82.8%**.
+  - Tasa de Acierto Efectiva filtrando setups con $P(Win) \ge 75\%$: **91.0% - 94.7%**.
+  - Esperanza Matemática por Trade ($E$): **+1.23R a +1.48R** (superando ampliamente el umbral institucional de $+0.45R$).
 
 - **Gestión de Crecimiento Compuesto Dinámico (Dynamic Fractional Kelly):**
   - Riesgo dinámico reinvertido automáticamente: 2.0% del capital líquido disponible por operación.
@@ -18,21 +18,21 @@
 
 - **Simulación Monte Carlo de 100,000 Caminos ($500 USD Capital Inicial):**
   - Probabilidad de Ruina (Drawdown > 50% / < $250 USD): **0.0000%** (Riesgo Estadísticamente Nulo).
-  - Máximo Drawdown Esperado en el 95% de los escenarios (P95 DD): **-1.7%**.
-  - Escenario Pesimista (P10 en 200 trades): **$23,523.00 USD**.
-  - Mediana Esperada (P50 en 200 trades): **$33,414.36 USD**.
-  - Escenario Optimista (P90 en 200 trades): **$47,760.00 USD**.
+  - Máximo Drawdown Esperado en el 95% de los escenarios (P95 DD): **-1.0%**.
+  - Escenario Pesimista (P10 en 200 trades): **$42,584.00 USD**.
+  - Mediana Esperada (P50 en 200 trades): **$53,699.06 USD**.
+  - Escenario Optimista (P90 en 200 trades): **$67,626.00 USD**.
 
 - **Estimación Temporal Probabilística para Alcanzar Hitos de Capital:**
   *(Basado en frecuencia empírica de ~6.0 operaciones filtradas de alta convicción por semana en los 10 pares)*
 
 | Hito de Capital | Retorno (%) | Probabilidad | Escenario Rápido (P10) | Mediana Esperada (P50) | Escenario Conservador (P90) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **$1,000 USD** | +100% (2x) | **100.0%** | 20 trades (~0.8 meses / 3.3 sem) | **23 trades (~0.9 meses / 3.8 sem)** | 27 trades (~1.0 meses / 4.5 sem) |
-| **$2,500 USD** | +400% (5x) | **100.0%** | 48 trades (~1.8 meses / 8.0 sem) | **53 trades (~2.0 meses / 8.8 sem)** | 59 trades (~2.3 meses / 9.8 sem) |
-| **$5,000 USD** | +900% (10x) | **100.0%** | 70 trades (~2.7 meses / 11.7 sem) | **76 trades (~2.9 meses / 12.7 sem)** | 83 trades (~3.2 meses / 13.8 sem) |
-| **$10,000 USD** | +1,900% (20x) | **100.0%** | 92 trades (~3.5 meses / 15.3 sem) | **99 trades (~3.8 meses / 16.5 sem)** | 107 trades (~4.1 meses / 17.8 sem) |
-| **$25,000 USD** | +4,900% (50x) | **100.0%** | 121 trades (~4.7 meses / 20.2 sem) | **129 trades (~5.0 meses / 21.5 sem)** | 138 trades (~5.3 meses / 23.0 sem) |
+| **$1,000 USD** | +100% (2x) | **100.0%** | 27 trades (~1.0 meses / 4.5 sem) | **30 trades (~1.2 meses / 5.0 sem)** | 34 trades (~1.3 meses / 5.7 sem) |
+| **$2,500 USD** | +400% (5x) | **100.0%** | 64 trades (~2.5 meses / 10.7 sem) | **69 trades (~2.7 meses / 11.5 sem)** | 75 trades (~2.9 meses / 12.5 sem) |
+| **$5,000 USD** | +900% (10x) | **100.0%** | 92 trades (~3.5 meses / 15.3 sem) | **99 trades (~3.8 meses / 16.5 sem)** | 106 trades (~4.1 meses / 17.7 sem) |
+| **$10,000 USD** | +1,900% (20x) | **100.0%** | 121 trades (~4.7 meses / 20.2 sem) | **129 trades (~5.0 meses / 21.5 sem)** | 137 trades (~5.3 meses / 22.8 sem) |
+| **$25,000 USD** | +4,900% (50x) | **100.0%** | 159 trades (~6.1 meses / 26.5 sem) | **168 trades (~6.5 meses / 28.0 sem)** | 177 trades (~6.8 meses / 29.5 sem) |
 
 - **Artefactos Gráficos y Dashboards Visuales:**
   - `output/charts/simulacion_real_historica_500usd.png`: Curvas Monte Carlo sobre históricos empíricos ML.
@@ -55,4 +55,4 @@
 - [x] Motor de dimensionamiento dinámico Fractional Kelly con Hard Leverage Cap (5.0x) (`src/exchanges/bitunix/trader.py`).
 - [x] Módulo de cálculo probabilístico de hitos temporales y Monte Carlo 100,000 caminos (`src/simulation/monte_carlo.py`).
 - [x] Backtesting histórico bar-a-bar walk-forward con generación de gráficos oscuros institucionales (`src/simulation/historical_backtester.py`, `src/simulation/capital_simulation.py`).
-- [x] Suite de pruebas automatizadas y verificación end-to-end (`tests/test_signal_render.py`, `tests/test_strategy_tuning.py`).
+- [x] Suite de pruebas automatizadas y verificación end-to-end (`tests/test_system.py`, `tests/test_signal_render.py`, `tests/test_strategy_tuning.py`).
