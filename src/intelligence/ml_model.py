@@ -1,49 +1,82 @@
-﻿import os
+import os
 import json
 import logging
 import numpy as np
 import pandas as pd
+import joblib
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from src.patterns.types import TradeSetup
+from src.intelligence.features import FEATURE_NAMES
 
 logger = logging.getLogger("TradiML")
 
 HISTORY_FILE = os.path.join("data", "signals_history.json")
+MODEL_FILE = os.path.join("data", "tradi_ml_model.joblib")
+
+ALL_MODEL_FEATURES = FEATURE_NAMES + [
+    "feat_direction",
+    "feat_rr_tp1",
+    "feat_rr_tp2",
+    "feat_has_sweep",
+    "feat_has_fvg",
+    "feat_has_ob"
+]
 
 class AdaptiveTradingBrain:
     """
     Cerebro de Inteligencia Artificial Cuantitativa que evalúa el vector de 24 características
-    para predecir la probabilidad matemática real de alcanzar TP antes de SL.
+    y la confluencia estructural mediante un modelo supervisado calibrado (scikit-learn)
+    para predecir con máxima precisión la probabilidad matemática real de alcanzar TP antes de SL.
     """
 
     def __init__(self):
-        # Ponderaciones estadísticas calibradas sobre microestructura y flujo de órdenes
+        self.ml_pipeline = None
+        self.ml_metadata = {}
+        self.model_features = ALL_MODEL_FEATURES
+
+        # Ponderaciones estadísticas calibradas para modo heurístico / fallback
         self.weights = {
-            # Bloque 1: Volatilidad y Rango
-            "feat_norm_atr": -1.5,          # Penaliza volatilidad anormalmente descontrolada
-            "feat_bb_width": 1.2,           # Premia expansión tras compresión (Squeeze release)
-            "feat_candle_expansion": 1.4,   # Premia velas de expansión institucional
-            
-            # Bloque 2: Volumen y Microestructura
-            "feat_rvol_20": 2.0,            # Alto volumen relativo = participación de ballenas
-            "feat_volume_delta_proxy": 2.2, # Presión neta compradora/vendedora
-            "feat_obv_slope": 1.6,          # Acumulación/distribución sostenida
-            "feat_vwap_dist": 1.1,          # Desviación respecto al precio promedio ponderado
-            
-            # Bloque 3: Tendencia y Momentum Multi-Timeframe
-            "feat_htf_trend_align": 3.0,    # Confluencia con tendencia macro 4H (Factor Clave)
-            "feat_mtf_trend_align": 1.8,    # Alineación en temporalidad intermedia
-            "feat_adx_14": 1.5,             # Fuerza direccional del mercado
-            "feat_rsi_divergence": 2.5,     # Divergencias de agotamiento institucional
-            
-            # Bloque 4: Geometría de Vela y Acción del Precio
-            "feat_body_ratio": 1.8,         # Desplazamiento limpio sin indecisión
-            "feat_wick_asymmetry": 2.2,     # Rechazo agresivo en la zona de liquidez
-            "feat_close_position": 1.5,     # Cierre en el extremo favorable de la vela
-            "feat_regime_entropy": 1.3      # Mercado en tendencia vs ruido
+            "feat_norm_atr": -1.5,
+            "feat_bb_width": 1.2,
+            "feat_candle_expansion": 1.4,
+            "feat_rvol_20": 2.0,
+            "feat_volume_delta_proxy": 2.2,
+            "feat_obv_slope": 1.6,
+            "feat_vwap_dist": 1.1,
+            "feat_htf_trend_align": 3.0,
+            "feat_mtf_trend_align": 1.8,
+            "feat_adx_14": 1.5,
+            "feat_rsi_divergence": 2.5,
+            "feat_body_ratio": 1.8,
+            "feat_wick_asymmetry": 2.2,
+            "feat_close_position": 1.5,
+            "feat_regime_entropy": 1.3
         }
+        
+        self.load_ml_model()
         self.history = self._load_history()
+
+    def load_ml_model(self) -> bool:
+        """Carga el modelo supervisado calibrado guardado en disco si existe."""
+        if os.path.exists(MODEL_FILE):
+            try:
+                bundle = joblib.load(MODEL_FILE)
+                self.ml_pipeline = bundle.get("pipeline")
+                self.model_features = bundle.get("feature_names", ALL_MODEL_FEATURES)
+                self.ml_metadata = {
+                    "auc_roc": bundle.get("auc_roc"),
+                    "brier_score": bundle.get("brier_score"),
+                    "filtered_win_rate": bundle.get("filtered_win_rate"),
+                    "total_samples": bundle.get("total_samples"),
+                    "trained_at": bundle.get("trained_at")
+                }
+                logger.info(f"✔ Modelo supervisado ML cargado exitosamente (AUC={self.ml_metadata.get('auc_roc')}, WR={self.ml_metadata.get('filtered_win_rate')}%)")
+                return True
+            except Exception as e:
+                logger.warning(f"No se pudo cargar el artefacto ML ({MODEL_FILE}): {e}")
+                self.ml_pipeline = None
+        return False
 
     def _load_history(self) -> List[Dict[str, Any]]:
         if os.path.exists(HISTORY_FILE):
@@ -56,6 +89,7 @@ class AdaptiveTradingBrain:
 
     def _save_history(self):
         try:
+            os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.history[-500:], f, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -63,43 +97,57 @@ class AdaptiveTradingBrain:
 
     def predict_probability(self, setup: TradeSetup, feat_series: pd.Series) -> float:
         """
-        Calcula la probabilidad matemática de éxito mediante función logística sigmoide
-        sobre el vector de 24 características y la confluencia estructural SMC.
+        Calcula la probabilidad matemática calibrada de éxito P(Win >= 75%)
+        utilizando el modelo supervisado de scikit-learn sobre las 24 características
+        y la confluencia estructural SMC.
         """
+        # 1. Intentar predicción con el modelo supervisado real de scikit-learn
+        if self.ml_pipeline is not None:
+            try:
+                sample_dict = {f: float(feat_series.get(f, 0.0)) for f in FEATURE_NAMES}
+                sample_dict["feat_direction"] = 1.0 if setup.direction == "LONG" else -1.0
+                sample_dict["feat_rr_tp1"] = float(setup.rr_tp1)
+                sample_dict["feat_rr_tp2"] = float(setup.rr_tp2)
+                sample_dict["feat_has_sweep"] = 1.0 if any("Barrido" in r for r in setup.reasons) else 0.0
+                sample_dict["feat_has_fvg"] = 1.0 if any("Fair Value Gap" in r for r in setup.reasons) else 0.0
+                sample_dict["feat_has_ob"] = 1.0 if any("Order Block" in r for r in setup.reasons) else 0.0
+
+                df_sample = pd.DataFrame([sample_dict])[self.model_features].fillna(0.0)
+                proba = float(self.ml_pipeline.predict_proba(df_sample)[0, 1] * 100.0)
+                calibrated_percentage = float(np.clip(proba, 25.0, 96.0))
+                return round(calibrated_percentage, 1)
+            except Exception as ex:
+                logger.warning(f"Fallo en inferencia ML supervisada, usando fallback calibrado: {ex}")
+
+        # 2. Fallback Heurístico Calibrado
         raw_score = 0.0
         direction_mult = 1.0 if setup.direction == "LONG" else -1.0
 
-        # 1. Alineación de Tendencia Macro (4H) e Intermedia (15m)
         htf_align = feat_series.get('feat_htf_trend_align', 0.0)
         raw_score += self.weights["feat_htf_trend_align"] * (htf_align * direction_mult)
 
         mtf_align = feat_series.get('feat_mtf_trend_align', 0.0)
         raw_score += self.weights["feat_mtf_trend_align"] * (mtf_align * direction_mult)
 
-        # 2. Volumen Relativo (RVOL) y Delta Proxy
         rvol = feat_series.get('feat_rvol_20', 1.0)
         raw_score += self.weights["feat_rvol_20"] * min(max(rvol - 1.0, -1.0), 2.5)
 
         vol_delta = feat_series.get('feat_volume_delta_proxy', 0.0)
         raw_score += self.weights["feat_volume_delta_proxy"] * (vol_delta * direction_mult)
 
-        # 3. Divergencia RSI
         rsi_div = feat_series.get('feat_rsi_divergence', 0.0)
         raw_score += self.weights["feat_rsi_divergence"] * (rsi_div * direction_mult)
 
-        # 4. Desplazamiento y Rechazo en Mecha
         body_ratio = feat_series.get('feat_body_ratio', 0.5)
         raw_score += self.weights["feat_body_ratio"] * (body_ratio - 0.4) * 2.0
 
         wick_asym = feat_series.get('feat_wick_asymmetry', 0.0)
         raw_score += self.weights["feat_wick_asymmetry"] * (wick_asym * direction_mult)
 
-        # 5. Fuerza de Tendencia ADX
         adx = feat_series.get('feat_adx_14', 20.0)
         if adx > 25.0:
             raw_score += self.weights["feat_adx_14"] * min((adx - 25.0) / 25.0, 1.0)
 
-        # 6. Confluencia Institucional SMC
         if any("Barrido" in r for r in setup.reasons):
             raw_score += 2.0
         if any("Fair Value Gap" in r for r in setup.reasons):
@@ -107,12 +155,8 @@ class AdaptiveTradingBrain:
         if setup.rr_tp2 >= 3.0:
             raw_score += 1.0
 
-        # Función de Mapeo Probabilístico Logístico Calibrado:
-        # Base neutral P = 0.50 (50%). Confluencia fuerte eleva a 75% - 94%.
-        # Confluencia negativa (contratendencia sin volumen) cae a 35% - 50%.
-        z = (raw_score - 1.5) / 3.0  # Centrado en zona de corte institucional
+        z = (raw_score - 1.5) / 3.0
         prob = 1.0 / (1.0 + np.exp(-z))
-        
         calibrated_percentage = float(np.clip(prob * 100.0, 30.0, 95.0))
         return round(calibrated_percentage, 1)
 

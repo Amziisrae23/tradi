@@ -51,25 +51,26 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
                     logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
                     
-                    # Ejecutar en Bitunix (Real o Simulación segura)
+                    # Ejecutar en Bitunix con Dynamic Fractional Kelly (2.0% de equidad acumulada)
                     res = trader.execute_order(
                         symbol=sym,
                         direction=direction,
                         entry_price=entry,
                         stop_loss=sl,
                         take_profit=tp,
-                        risk_usd=settings.FIXED_RISK_USD
+                        risk_pct=0.02
                     )
                     
                     app_state["executed_orders"] += 1
                     mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res["mode"] == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+                    assigned_risk = res.get('risk_usd', settings.FIXED_RISK_USD)
                     
                     receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
 📍 Entrada: ${entry}
 🛑 Stop Loss: ${sl}
 🎯 Take Profit: ${tp}
-💼 Riesgo asignado: ${settings.FIXED_RISK_USD:.2f} USD
+💼 Riesgo asignado: ${assigned_risk:.2f} USD (Dynamic Kelly 2.0%)
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
                     

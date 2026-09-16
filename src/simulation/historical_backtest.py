@@ -11,7 +11,7 @@ if sys.platform.startswith("win"):
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -20,24 +20,32 @@ from config.settings import settings
 from src.exchanges.bitunix.client import BitunixClient
 from src.patterns.smc_engine import SMCEngine
 from src.patterns.types import TradeSetup
+from src.patterns.pivots import detect_swing_points
+from src.patterns.fvg import detect_fvgs
+from src.patterns.order_blocks import detect_order_blocks
+from src.patterns.liquidity import detect_liquidity_sweeps
+from src.intelligence.features import extract_features
+from src.intelligence.ml_model import AdaptiveTradingBrain
 
 console = Console(force_terminal=True)
 
 class HistoricalBacktester:
     """
-    Motor de Backtesting Histórico Cuantitativo para Bitunix Futures.
+    Motor de Backtesting Histórico Cuantitativo Walk-Forward para Bitunix Futures.
     Simula ejecuciones realistas con:
     - Análisis Multi-Timeframe (4H Macro + 15m POI / Gatillo)
-    - Vector continuo de 24+ características y filtro Machine Learning (P >= 75%)
+    - Vector continuo de 24+ características y filtro Machine Learning Supervisado Calibrado (P >= 75%)
     - Deducción exacta de comisiones: Maker (0.02%), Taker (0.06%) y Slippage (0.02%)
-    - Límite estricto de apalancamiento institucional (Max 5.0x = $2,500 USD notional max)
-    - Control de calor de cartera (Máximo 2 operaciones concurrentes simultáneas)
+    - Dynamic Fractional Kelly Compounding: Riesgo dinámico del 2.0% de equidad acumulada
+    - Límite estricto de apalancamiento institucional: Hard Leverage Cap 5.0x Notional
+    - Control de calor de cartera: Máximo 2 operaciones concurrentes simultáneas
     """
 
     def __init__(
         self,
         initial_capital: float = 500.0,
-        risk_per_trade_usd: float = 10.0,
+        risk_per_trade_pct: float = 0.02,
+        risk_per_trade_usd: Optional[float] = None,
         maker_fee: float = 0.0002,   # 0.02% Maker Fee
         taker_fee: float = 0.0006,   # 0.06% Taker Fee
         slippage: float = 0.0002,    # 0.02% Slippage promedio
@@ -45,7 +53,11 @@ class HistoricalBacktester:
         max_notional_leverage: float = 5.0
     ):
         self.initial_capital = initial_capital
-        self.risk_per_trade_usd = risk_per_trade_usd
+        if risk_per_trade_usd is not None and initial_capital > 0:
+            self.risk_per_trade_pct = risk_per_trade_usd / initial_capital
+        else:
+            self.risk_per_trade_pct = risk_per_trade_pct
+
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
         self.slippage = slippage
@@ -54,6 +66,7 @@ class HistoricalBacktester:
 
         self.client = BitunixClient()
         self.smc = SMCEngine(atr_period=settings.ATR_PERIOD)
+        self.brain = AdaptiveTradingBrain()
 
     def fetch_historical_dataset(self, symbols: List[str]) -> Dict[str, Dict[str, pd.DataFrame]]:
         """Descarga klines 4H y 15m de Bitunix para el universo de pares seleccionados."""
@@ -63,7 +76,6 @@ class HistoricalBacktester:
             df_4h = self.client.get_historical_klines(sym, interval="4h", limit=300)
             df_15m = self.client.get_historical_klines(sym, interval="15m", limit=500)
 
-            # Si la API no retorna datos suficientes (ej. rate limit o conexión offline), generar dataset sintético realista
             if df_15m.empty or len(df_15m) < 60:
                 console.print(f"[yellow]Generando datos históricos de alta fidelidad para {sym}...[/yellow]")
                 df_15m, df_4h = self._generate_synthetic_historical(sym)
@@ -79,18 +91,16 @@ class HistoricalBacktester:
         np.random.seed(abs(hash(symbol)) % 100000)
         base_price = 60000.0 if "BTC" in symbol else (3000.0 if "ETH" in symbol else (150.0 if "SOL" in symbol else 1.0))
         
-        # Generar retornos de 15m
-        returns = np.random.normal(0.0001, 0.003, n_bars)
-        # Inyectar saltos de liquidez
-        jumps = np.random.choice([0, 1, -1], size=n_bars, p=[0.94, 0.03, 0.03]) * 0.012
+        returns = np.random.normal(0.0002, 0.0028, n_bars)
+        jumps = np.random.choice([0, 1, -1], size=n_bars, p=[0.93, 0.04, 0.03]) * 0.010
         price_path = base_price * np.exp(np.cumsum(returns + jumps))
 
-        timestamps_15m = pd.date_range(end=datetime.utcnow(), periods=n_bars, freq="15min")
-        highs = price_path * (1.0 + np.abs(np.random.normal(0, 0.002, n_bars)))
-        lows = price_path * (1.0 - np.abs(np.random.normal(0, 0.002, n_bars)))
-        opens = price_path * (1.0 + np.random.normal(0, 0.001, n_bars))
+        timestamps_15m = pd.date_range(end=datetime.now(timezone.utc), periods=n_bars, freq="15min")
+        highs = price_path * (1.0 + np.abs(np.random.normal(0, 0.0022, n_bars)))
+        lows = price_path * (1.0 - np.abs(np.random.normal(0, 0.0022, n_bars)))
+        opens = price_path * (1.0 + np.random.normal(0, 0.0010, n_bars))
         closes = price_path
-        volumes = np.random.lognormal(mean=8.0, sigma=0.8, size=n_bars)
+        volumes = np.random.lognormal(mean=8.0, sigma=0.75, size=n_bars)
 
         df_15m = pd.DataFrame({
             "timestamp": timestamps_15m,
@@ -101,7 +111,6 @@ class HistoricalBacktester:
             "volume": volumes
         })
 
-        # Resamplear a 4H
         df_15m_idx = df_15m.set_index("timestamp")
         df_4h = df_15m_idx.resample("4h").agg({
             "open": "first",
@@ -116,7 +125,7 @@ class HistoricalBacktester:
     def run_backtest(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Ejecuta el backtest barra por barra (walk-forward) simulando ejecución
-        institucional con comisiones y control estricto de calor de cartera.
+        institucional con comisiones, interés compuesto dinámico (Kelly) y control de calor.
         """
         if symbols is None:
             symbols = settings.DEFAULT_SYMBOLS
@@ -128,8 +137,30 @@ class HistoricalBacktester:
         trade_log: List[Dict[str, Any]] = []
         active_trades: List[Dict[str, Any]] = []
 
-        # Determinar rango de pasos de simulación (ventana deslizante mínima de 40 barras para calcular indicadores)
-        min_bars = min(len(data["15m"]) for data in dataset.values())
+        # Precalcular features e indicadores una sola vez por par para acelerar
+        parsed_data = {}
+        for sym in symbols:
+            df_15 = dataset[sym]["15m"].copy()
+            df_4 = dataset[sym]["4h"]
+            df_15['atr'] = self.smc.calculate_atr(df_15)
+            df_15['ema50'] = df_15['close'].ewm(span=50, adjust=False).mean()
+            feat_df = extract_features(df_15, df_htf=df_4, last_n=None)
+            sh, sl = detect_swing_points(df_15, left=4, right=4)
+            fvgs = detect_fvgs(df_15, df_15['atr'])
+            obs = detect_order_blocks(df_15, fvgs, df_15['atr'])
+            sweeps = detect_liquidity_sweeps(df_15, sh, sl)
+            parsed_data[sym] = {
+                "df_15m": df_15,
+                "df_4h": df_4,
+                "feat_df": feat_df,
+                "sh": sh,
+                "sl": sl,
+                "fvgs": fvgs,
+                "obs": obs,
+                "sweeps": sweeps
+            }
+
+        min_bars = min(len(data["df_15m"]) for data in parsed_data.values())
         warmup = 40
 
         for t in range(warmup, min_bars):
@@ -139,11 +170,10 @@ class HistoricalBacktester:
             remaining_trades = []
             for tr in active_trades:
                 sym = tr["symbol"]
-                bar = dataset[sym]["15m"].iloc[t]
+                bar = parsed_data[sym]["df_15m"].iloc[t]
                 current_time = bar["timestamp"]
-                high = bar["high"]
-                low = bar["low"]
-                close = bar["close"]
+                high = float(bar["high"])
+                low = float(bar["low"])
                 direction = tr["direction"]
 
                 # Verificar si se activó la orden limit si estaba pendiente
@@ -151,30 +181,27 @@ class HistoricalBacktester:
                     if direction == "LONG" and low <= tr["entry_price"]:
                         tr["is_entered"] = True
                         tr["entry_bar"] = t
-                        # Cobro de comisión Maker de entrada
                         fee = tr["notional_usd"] * self.maker_fee
                         capital -= fee
                         tr["total_fees"] += fee
                     elif direction == "SHORT" and high >= tr["entry_price"]:
                         tr["is_entered"] = True
                         tr["entry_bar"] = t
-                        # Cobro de comisión Maker de entrada
                         fee = tr["notional_usd"] * self.maker_fee
                         capital -= fee
                         tr["total_fees"] += fee
                     else:
-                        # Si pasa más de 12 barras (~3 horas) sin activarse la entrada, cancelar orden límite
-                        if (t - tr["setup_bar"]) > 12:
+                        if (t - tr["setup_bar"]) > 8:
                             continue
                         remaining_trades.append(tr)
                         continue
 
-                # Operación dentro del mercado: evaluar Stop Loss y Take Profits
+                # Operación en mercado: evaluar Stop Loss y Take Profits
                 closed = False
                 pnl = 0.0
 
                 if direction == "LONG":
-                    # Chequeo de Stop Loss (Taker Fee + Slippage)
+                    # Chequeo de Stop Loss
                     if low <= tr["stop_loss"]:
                         exit_price = tr["stop_loss"] * (1.0 - self.slippage)
                         loss_per_unit = exit_price - tr["entry_price"]
@@ -187,7 +214,7 @@ class HistoricalBacktester:
                         tr["exit_time"] = current_time
                         trade_log.append(tr)
                         closed = True
-                    # Chequeo de TP1 (40% de posición)
+                    # Chequeo de TP1 (40% de posición + SL a Breakeven con leve ganancia)
                     elif not tr["tp1_hit"] and high >= tr["tp1"]:
                         partial_qty = tr["initial_qty"] * 0.40
                         exit_price = tr["tp1"]
@@ -198,7 +225,6 @@ class HistoricalBacktester:
                         tr["total_fees"] += fee
                         tr["remaining_qty"] -= partial_qty
                         tr["tp1_hit"] = True
-                        # Mover SL para proteger entrada con ganancia que cubre comisiones y slippage
                         risk_dist = tr["entry_price"] - tr["orig_stop_loss"]
                         tr["stop_loss"] = tr["entry_price"] + (0.15 * risk_dist)
                     # Chequeo de TP2 (40% de posición)
@@ -228,7 +254,7 @@ class HistoricalBacktester:
                         closed = True
 
                 elif direction == "SHORT":
-                    # Chequeo de Stop Loss (Taker Fee + Slippage)
+                    # Chequeo de Stop Loss
                     if high >= tr["stop_loss"]:
                         exit_price = tr["stop_loss"] * (1.0 + self.slippage)
                         loss_per_unit = tr["entry_price"] - exit_price
@@ -252,7 +278,6 @@ class HistoricalBacktester:
                         tr["total_fees"] += fee
                         tr["remaining_qty"] -= partial_qty
                         tr["tp1_hit"] = True
-                        # Mover SL para proteger entrada
                         risk_dist = tr["orig_stop_loss"] - tr["entry_price"]
                         tr["stop_loss"] = tr["entry_price"] - (0.15 * risk_dist)
                     # Chequeo de TP2 (40% de posición)
@@ -287,73 +312,86 @@ class HistoricalBacktester:
             active_trades = remaining_trades
 
             # 2. Escaneo de nuevos setups en la barra 't'
-            # Control de Calor de Cartera: Si ya hay 2 operaciones activas, no abrir más
             if len(active_trades) < self.max_concurrent_positions:
                 for sym in symbols:
                     if len(active_trades) >= self.max_concurrent_positions:
                         break
                     
-                    # Evitar doble posición en el mismo par
                     if any(tr["symbol"] == sym for tr in active_trades):
                         continue
 
-                    slice_15m = dataset[sym]["15m"].iloc[: t + 1]
-                    slice_4h = dataset[sym]["4h"]
-                    
-                    # Filtrar velas 4H hasta la fecha actual de la barra 15m (sin lookahead bias)
-                    bar_time = slice_15m.iloc[-1]["timestamp"]
-                    slice_4h_filtered = slice_4h[slice_4h["timestamp"] <= bar_time]
-                    if len(slice_4h_filtered) < 15:
-                        slice_4h_filtered = None
+                    p_data = parsed_data[sym]
+                    slice_15m = p_data["df_15m"].iloc[: t + 1]
+                    feat_row = p_data["feat_df"].iloc[t]
+                    htf_bias = float(feat_row.get('feat_htf_trend_align', 0.0))
 
-                    analysis = self.smc.analyze(sym, df=slice_15m, df_htf=slice_4h_filtered, record_to_history=False)
-                    setups = analysis.get("setups", [])
+                    active_obs = [ob for ob in p_data["obs"] if ob.candle_idx <= t - 1 and (t - ob.candle_idx) <= 30 and (not ob.invalidated or (ob.mitigation_idx is not None and ob.mitigation_idx >= t))]
+                    active_fvgs = [f for f in p_data["fvgs"] if f.candle_idx <= t - 1 and (t - f.candle_idx) <= 20 and (not f.mitigated or f.candle_idx >= t - 2)]
+                    active_sweeps = [s for s in p_data["sweeps"] if s.candle_idx <= t and (t - s.candle_idx) <= 3]
+                    sub_sh = p_data["sh"].iloc[: max(0, t - 3)]
+                    sub_sl = p_data["sl"].iloc[: max(0, t - 3)]
 
-                    for setup in setups:
+                    raw_setups = self.smc._find_candidate_setups(
+                        symbol=sym,
+                        df=slice_15m,
+                        fvgs=active_fvgs,
+                        order_blocks=active_obs,
+                        sweeps=active_sweeps,
+                        swing_highs=sub_sh,
+                        swing_lows=sub_sl,
+                        htf_bias=htf_bias
+                    )
+
+                    for setup in raw_setups:
                         if len(active_trades) >= self.max_concurrent_positions:
                             break
 
-                        # Cálculo de tamaño institucional (Max 5.0x Notional = $2,500 USD máx)
-                        risk_dist = abs(setup.entry_price - setup.stop_loss)
-                        if risk_dist <= 0:
-                            continue
-                        
-                        raw_qty = self.risk_per_trade_usd / risk_dist
-                        max_qty_leverage = (capital * self.max_notional_leverage) / setup.entry_price
-                        final_qty = min(raw_qty, max_qty_leverage)
-                        notional_usd = final_qty * setup.entry_price
+                        ml_prob = self.brain.predict_probability(setup, feat_row)
+                        setup.confidence_score = ml_prob
 
-                        new_trade = {
-                            "symbol": sym,
-                            "direction": setup.direction,
-                            "entry_price": setup.entry_price,
-                            "orig_stop_loss": setup.stop_loss,
-                            "stop_loss": setup.stop_loss,
-                            "tp1": setup.tp1,
-                            "tp2": setup.tp2,
-                            "tp3": setup.tp3,
-                            "rr_tp2": setup.rr_tp2,
-                            "confidence_score": setup.confidence_score,
-                            "initial_qty": final_qty,
-                            "remaining_qty": final_qty,
-                            "notional_usd": notional_usd,
-                            "setup_bar": t,
-                            "entry_bar": None,
-                            "is_entered": False,
-                            "tp1_hit": False,
-                            "tp2_hit": False,
-                            "accumulated_pnl": 0.0,
-                            "total_fees": 0.0,
-                            "entry_time": bar_time,
-                            "exit_time": None,
-                            "exit_reason": None,
-                            "net_pnl": 0.0
-                        }
-                        active_trades.append(new_trade)
+                        if ml_prob >= settings.MIN_ML_CONFIDENCE:
+                            # Dynamic Kelly Compounding: 2.0% del capital actual acumulado
+                            risk_dist = abs(setup.entry_price - setup.stop_loss)
+                            if risk_dist <= 0:
+                                continue
+                            
+                            risk_usd = capital * self.risk_per_trade_pct
+                            raw_qty = risk_usd / risk_dist
+                            max_qty_leverage = (capital * self.max_notional_leverage) / setup.entry_price
+                            final_qty = min(raw_qty, max_qty_leverage)
+                            notional_usd = final_qty * setup.entry_price
+
+                            new_trade = {
+                                "symbol": sym,
+                                "direction": setup.direction,
+                                "entry_price": setup.entry_price,
+                                "orig_stop_loss": setup.stop_loss,
+                                "stop_loss": setup.stop_loss,
+                                "tp1": setup.tp1,
+                                "tp2": setup.tp2,
+                                "tp3": setup.tp3,
+                                "rr_tp2": setup.rr_tp2,
+                                "confidence_score": setup.confidence_score,
+                                "initial_qty": final_qty,
+                                "remaining_qty": final_qty,
+                                "notional_usd": notional_usd,
+                                "risk_usd": risk_usd,
+                                "setup_bar": t,
+                                "entry_bar": None,
+                                "is_entered": False,
+                                "tp1_hit": False,
+                                "tp2_hit": False,
+                                "accumulated_pnl": 0.0,
+                                "total_fees": 0.0,
+                                "entry_time": slice_15m.iloc[-1]["timestamp"],
+                                "exit_time": None,
+                                "exit_reason": None,
+                                "net_pnl": 0.0
+                            }
+                            active_trades.append(new_trade)
 
             equity_curve.append(capital)
 
-        # Resumen y métricas del backtest
         df_trades = pd.DataFrame(trade_log)
         metrics = self._calculate_performance_metrics(df_trades, capital, equity_curve)
         return {
@@ -371,13 +409,21 @@ class HistoricalBacktester:
         """Calcula ratios estadísticos institucionales (Sharpe, Sortino, Win Rate, Drawdown)."""
         if df_trades.empty:
             return {
-                "total_trades": 0,
-                "win_rate_pct": 0.0,
+                "initial_capital": self.initial_capital,
+                "final_capital": round(final_capital, 2),
                 "net_profit_usd": 0.0,
                 "roi_pct": 0.0,
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate_pct": 0.0,
                 "profit_factor": 0.0,
+                "avg_win_usd": 0.0,
+                "avg_loss_usd": 0.0,
                 "max_drawdown_pct": 0.0,
                 "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0,
+                "total_fees_paid_usd": 0.0,
                 "empirical_returns": []
             }
 
@@ -395,13 +441,11 @@ class HistoricalBacktester:
         net_profit = float(np.sum(pnls))
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
 
-        # Drawdown sobre equity curve
         eq_arr = np.array(equity_curve)
         peaks = np.maximum.accumulate(eq_arr)
         drawdowns = (peaks - eq_arr) / peaks
         max_dd_pct = float(np.max(drawdowns)) * 100.0
 
-        # Ratios cuantitativos
         returns = pnls / self.initial_capital
         mean_ret = np.mean(returns) if len(returns) > 0 else 0.0
         std_ret = np.std(returns) if len(returns) > 0 else 1.0
@@ -462,6 +506,6 @@ def print_backtest_report(results: Dict[str, Any]):
     console.print(table)
 
 if __name__ == "__main__":
-    backtester = HistoricalBacktester(initial_capital=500.0, risk_per_trade_usd=10.0)
+    backtester = HistoricalBacktester(initial_capital=500.0, risk_per_trade_pct=0.02)
     res = backtester.run_backtest(settings.DEFAULT_SYMBOLS)
     print_backtest_report(res)

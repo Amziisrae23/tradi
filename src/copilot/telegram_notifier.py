@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import logging
 import requests
@@ -34,7 +34,7 @@ class TelegramNotifier:
             "inline_keyboard": [
                 [
                     {
-                        "text": f"🟢 EJECUTAR EN BITUNIX (${settings.FIXED_RISK_USD:.0f} USD)",
+                        "text": f"🟢 EJECUTAR EN BITUNIX (2% Kelly / ${settings.FIXED_RISK_USD:.0f} USD)",
                         "callback_data": callback_data
                     }
                 ],

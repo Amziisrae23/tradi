@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
 
@@ -30,7 +30,34 @@ def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     adx = dx.rolling(period).mean().fillna(20.0)
     return adx
 
-def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, last_n: int = 1) -> pd.DataFrame:
+FEATURE_NAMES: List[str] = [
+    "feat_norm_atr",
+    "feat_bb_width",
+    "feat_parkinson_vol",
+    "feat_candle_expansion",
+    "feat_rvol_20",
+    "feat_volume_delta_proxy",
+    "feat_obv_slope",
+    "feat_vwap_dist",
+    "feat_dist_ema20",
+    "feat_dist_ema50",
+    "feat_dist_ema200",
+    "feat_mtf_trend_align",
+    "feat_htf_trend_align",
+    "feat_adx_14",
+    "feat_rsi_14",
+    "feat_rsi_divergence",
+    "feat_body_ratio",
+    "feat_wick_asymmetry",
+    "feat_close_position",
+    "feat_roc_3",
+    "feat_hl_spike",
+    "feat_vol_concentration",
+    "feat_skew_proxy",
+    "feat_regime_entropy"
+]
+
+def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, last_n: Optional[int] = 1) -> pd.DataFrame:
     """
     Extrae el vector institucional completo de 24 características continuas
     a partir de las velas y la microestructura de mercado.
@@ -50,7 +77,7 @@ def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, la
 
     # 2. Bollinger Band Width (Squeeze / Expansión)
     bb_mid = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
+    bb_std = close.rolling(20).std().replace(0, np.nan)
     bb_upper = bb_mid + (2 * bb_std)
     bb_lower = bb_mid - (2 * bb_std)
     df['feat_bb_width'] = ((bb_upper - bb_lower) / bb_mid).fillna(0.02)
@@ -104,19 +131,23 @@ def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, la
     df['feat_mtf_trend_align'] = np.where(bull_align, 1.0, np.where(bear_align, -1.0, 0.0))
 
     # 13. Alineación de Tendencia Macro (HTF 4H)
-    if df_htf is not None and not df_htf.empty and len(df_htf) >= 30:
-        htf_close = df_htf['close'].iloc[-1]
-        htf_ema50 = df_htf['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-        htf_ema200 = df_htf['close'].ewm(span=200, adjust=False).mean().iloc[-1]
-        if htf_close > htf_ema50 > htf_ema200:
-            htf_bias = 1.0
-        elif htf_close < htf_ema50 < htf_ema200:
-            htf_bias = -1.0
+    if df_htf is not None and not df_htf.empty and len(df_htf) >= 15:
+        htf_close = df_htf['close']
+        htf_ema50 = htf_close.ewm(span=50, adjust=False).mean()
+        htf_ema200 = htf_close.ewm(span=200, adjust=False).mean()
+        htf_bias_series = np.where(
+            (htf_close > htf_ema50) & (htf_ema50 > htf_ema200), 1.0,
+            np.where((htf_close < htf_ema50) & (htf_ema50 < htf_ema200), -1.0, 0.0)
+        )
+        if 'timestamp' in df.columns and 'timestamp' in df_htf.columns and len(df) > 1:
+            htf_df_temp = pd.DataFrame({'timestamp': df_htf['timestamp'], 'htf_bias': htf_bias_series})
+            merged = pd.merge_asof(df[['timestamp']].sort_values('timestamp'), htf_df_temp.sort_values('timestamp'), on='timestamp', direction='backward')
+            df['feat_htf_trend_align'] = merged['htf_bias'].fillna(0.0).values
         else:
-            htf_bias = 0.0
+            last_bias = float(htf_bias_series[-1])
+            df['feat_htf_trend_align'] = last_bias
     else:
-        htf_bias = 1.0 if close.iloc[-1] > ema200.iloc[-1] else -1.0
-    df['feat_htf_trend_align'] = htf_bias
+        df['feat_htf_trend_align'] = np.where(close > ema200, 1.0, -1.0)
 
     # 14. ADX (Fuerza de la tendencia)
     df['feat_adx_14'] = calculate_adx(df, 14)
@@ -160,4 +191,9 @@ def extract_features(df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, la
     df['feat_regime_entropy'] = np.where(df['feat_adx_14'] > 25, 1.0, 0.0)
 
     feat_cols = [c for c in df.columns if c.startswith('feat_')]
-    return df[feat_cols].tail(last_n)
+    for col in feat_cols:
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    if last_n is not None and last_n > 0:
+        return df[feat_cols].tail(last_n)
+    return df[feat_cols]
