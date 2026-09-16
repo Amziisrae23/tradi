@@ -1,11 +1,9 @@
-import sys
+﻿import sys
 import io
 
 if sys.platform.startswith("win"):
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import os
 import asyncio
@@ -22,6 +20,7 @@ from src.simulation.monte_carlo import run_monte_carlo_simulation
 from src.copilot.chart_renderer import ChartRenderer
 from src.copilot.signal_generator import SignalGenerator
 from src.copilot.telegram_notifier import TelegramNotifier
+from src.copilot.position_monitor import position_monitor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TradiCopilot")
@@ -53,30 +52,45 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
                     logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
                     
-                    # Ejecutar en Bitunix con Dynamic Fractional Kelly (2.0% de equidad acumulada)
+                    # Ejecutar en Bitunix
                     res = trader.execute_order(
                         symbol=sym,
                         direction=direction,
                         entry_price=entry,
                         stop_loss=sl,
                         take_profit=tp,
-                        risk_pct=0.02
+                        risk_usd=settings.FIXED_RISK_USD
                     )
                     
                     app_state["executed_orders"] += 1
                     mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res["mode"] == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
-                    assigned_risk = res.get('risk_usd', settings.FIXED_RISK_USD)
                     
                     receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
-📍 Entrada: ${entry}
-🛑 Stop Loss: ${sl}
-🎯 Take Profit: ${tp}
-💼 Riesgo asignado: ${assigned_risk:.2f} USD (Dynamic Kelly 2.0%)
+📍 Entrada: ${entry:,.2f}
+🛑 Stop Loss: ${sl:,.2f}
+🎯 Take Profit: ${tp:,.2f}
+💼 Riesgo asignado: ${settings.FIXED_RISK_USD:.2f} USD (2% Kelly)
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
                     
                     telegram.send_message(receipt)
+
+                    # Registrar la orden en el monitor de posiciones para alertas de Ganancia/Pérdida
+                    tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
+                    tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
+                    position_monitor.register_trade(
+                        order_id=res.get('order_id', 'N/A'),
+                        symbol=sym,
+                        direction=direction,
+                        entry_price=entry,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp,
+                        tp3=tp3,
+                        risk_usd=settings.FIXED_RISK_USD
+                    )
+
                 except Exception as ex:
                     logger.error(f"Error procesando orden de Telegram: {ex}")
                     telegram.send_message(f"❌ Error al procesar la orden: {ex}")
@@ -84,25 +98,29 @@ async def process_telegram_actions(telegram: TelegramNotifier):
             telegram.send_message("🗑️ Señal descartada.")
 
 async def scan_market(client, smc, renderer, telegram):
-    """Escanea las 10 criptomonedas más líquidas con Multi-Timeframe (4H + 15m), Machine Learning y SMC."""
-    logger.info(f"Iniciando escaneo inteligente Multi-Timeframe de {len(settings.DEFAULT_SYMBOLS)} pares...")
+    """Escanea las 10 criptomonedas más líquidas con Machine Learning y SMC."""
+    logger.info(f"Iniciando escaneo inteligente de {len(settings.DEFAULT_SYMBOLS)} pares...")
     app_state["last_scan"] = datetime.now(timezone.utc).isoformat()
 
     all_setups = []
+    latest_prices = {}
+
     for sym in settings.DEFAULT_SYMBOLS:
         try:
-            # Descarga simultánea de HTF (4H) para tendencia macro y MTF (15m) para POI / gatillo
-            df_4h = client.get_historical_klines(sym, interval=settings.HTF_INTERVAL, limit=100)
-            df_15m = client.get_historical_klines(sym, interval=settings.MTF_INTERVAL, limit=120)
+            df_mtf = client.get_historical_klines(sym, interval=settings.MTF_INTERVAL, limit=120)
+            df_htf = client.get_historical_klines(sym, interval=settings.HTF_INTERVAL, limit=60)
             
-            if df_15m.empty or len(df_15m) < 30:
+            if df_mtf.empty or len(df_mtf) < 30:
                 continue
 
-            analysis = smc.analyze(sym, df=df_15m, df_htf=df_4h if not df_4h.empty else None)
+            current_price = df_mtf['close'].iloc[-1]
+            latest_prices[sym] = current_price
+
+            analysis = smc.analyze(sym, df_mtf, df_htf)
             setups = analysis.get("setups", [])
 
             for s in setups:
-                chart_path = renderer.render_trade_setup(df_15m, s)
+                chart_path = renderer.render_trade_setup(df_mtf, s)
                 mc = run_monte_carlo_simulation(win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
                 signal_text = SignalGenerator.format_signal_text(s, mc)
                 all_setups.append((s, signal_text, chart_path))
@@ -114,23 +132,25 @@ async def scan_market(client, smc, renderer, telegram):
         except Exception as e:
             logger.error(f"Error escaneando {sym}: {e}")
 
+    # Monitorear posiciones activas y avisar si ganaron o perdieron
+    if latest_prices:
+        position_monitor.check_market_prices(latest_prices)
+
     if all_setups:
         app_state["signals_found"] += len(all_setups)
-        logger.info(f"¡{len(all_setups)} señales Multi-Timeframe validadas por IA y despachadas!")
+        logger.info(f"¡{len(all_setups)} señales de alta probabilidad detectadas y despachadas!")
     else:
-        logger.info("Escaneo completado: mercado en balance o filtrado por alineación macro 4H...")
+        logger.info("Escaneo completado: mercado en balance, esperando confluencia institucional...")
 
 async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds: int = 60):
     logger.info("Iniciando loop continuo 24/7 con Machine Learning y 1-Clic Telegram...")
     
     if telegram.is_configured():
-        telegram.send_message("🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo. Escaneando los 10 pares más líquidos con Machine Learning y Botones de 1-Clic.")
+        telegram.send_message("🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo. Escaneando los 10 pares más líquidos con Machine Learning y Monitoreo de Ganancias/Pérdidas.")
 
     while True:
         try:
-            # 1. Procesar si el usuario presionó algún botón en Telegram
             await process_telegram_actions(telegram)
-            # 2. Escanear el mercado
             await scan_market(client, smc, renderer, telegram)
         except Exception as e:
             logger.error(f"Error en loop de escaneo: {e}")

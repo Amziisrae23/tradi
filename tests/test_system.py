@@ -130,7 +130,7 @@ class TestSystemQuantitativeSuite(unittest.TestCase):
 
     def test_bitunix_trader_dynamic_kelly_and_hard_leverage_cap(self):
         """Verifica que BitunixTrader aplique Dynamic Kelly (2.0%) y respete estrictamente el Hard Leverage Cap 5.0x."""
-        trader = BitunixTrader(account_equity=500.0, default_risk_pct=0.02)
+        trader = BitunixTrader(api_key="", api_secret="", account_equity=500.0, default_risk_pct=0.02)
         self.assertEqual(trader.max_leverage_notional, 5.0)
 
         # Caso 1: SL muy estrecho que intentaría un apalancamiento excesivo (> 5.0x)
