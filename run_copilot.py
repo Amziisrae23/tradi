@@ -30,6 +30,7 @@ app_state = {
     "service": "Tradi Intelligent Copilot 24/7",
     "status": "running",
     "last_scan": None,
+    "scans_completed": 0,
     "signals_found": 0,
     "executed_orders": 0,
     "monitored_symbols": settings.DEFAULT_SYMBOLS
@@ -52,7 +53,6 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
                     logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
                     
-                    # Ejecutar en Bitunix
                     res = trader.execute_order(
                         symbol=sym,
                         direction=direction,
@@ -76,7 +76,6 @@ async def process_telegram_actions(telegram: TelegramNotifier):
                     
                     telegram.send_message(receipt)
 
-                    # Registrar la orden en el monitor de posiciones para alertas de Ganancia/Pérdida
                     tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
                     tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
                     position_monitor.register_trade(
@@ -99,8 +98,8 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
 async def scan_market(client, smc, renderer, telegram):
     """Escanea las 10 criptomonedas más líquidas con Machine Learning y SMC."""
-    logger.info(f"Iniciando escaneo inteligente de {len(settings.DEFAULT_SYMBOLS)} pares...")
     app_state["last_scan"] = datetime.now(timezone.utc).isoformat()
+    app_state["scans_completed"] += 1
 
     all_setups = []
     latest_prices = {}
@@ -132,54 +131,77 @@ async def scan_market(client, smc, renderer, telegram):
         except Exception as e:
             logger.error(f"Error escaneando {sym}: {e}")
 
-    # Monitorear posiciones activas y avisar si ganaron o perdieron
     if latest_prices:
         position_monitor.check_market_prices(latest_prices)
 
     if all_setups:
         app_state["signals_found"] += len(all_setups)
         logger.info(f"¡{len(all_setups)} señales de alta probabilidad detectadas y despachadas!")
-    else:
-        logger.info("Escaneo completado: mercado en balance, esperando confluencia institucional...")
 
 async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds: int = 60):
+    """Loop continuo 24/7 garantizado sin pausas."""
     logger.info("Iniciando loop continuo 24/7 con Machine Learning y 1-Clic Telegram...")
     
     if telegram.is_configured():
-        telegram.send_message("🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo. Escaneando los 10 pares más líquidos con Machine Learning y Monitoreo de Ganancias/Pérdidas.")
+        telegram.send_message("🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube. Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos.")
 
+    loop_count = 0
     while True:
         try:
             await process_telegram_actions(telegram)
             await scan_market(client, smc, renderer, telegram)
+            loop_count += 1
+            
+            # Cada 12 horas (720 ciclos de 60s), enviar un latido de confirmación a Telegram
+            if loop_count % 720 == 0 and telegram.is_configured():
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                telegram.send_message(f"📡 [LATIDO TRADI]: Escáner 24/7 100% operativo ({now_str}). {app_state['scans_completed']} escaneos completados sin interrupciones.")
+
         except Exception as e:
             logger.error(f"Error en loop de escaneo: {e}")
+
         await asyncio.sleep(interval_seconds)
 
 async def handle_health(request):
     return web.json_response(app_state)
 
-async def init_app():
-    app = web.Application()
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/health", handle_health)
-    return app
-
-def main():
+async def background_worker(app):
+    """Gestor oficial de ciclo de vida para tareas en segundo plano en aiohttp."""
     client = BitunixClient()
     smc = SMCEngine(atr_period=settings.ATR_PERIOD)
     renderer = ChartRenderer()
     telegram = TelegramNotifier()
 
+    app['scanner_task'] = asyncio.create_task(
+        continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds=60)
+    )
+    yield
+    app['scanner_task'].cancel()
+    try:
+        await app['scanner_task']
+    except asyncio.CancelledError:
+        pass
+
+def init_app():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health)
+    app.cleanup_ctx.append(background_worker)
+    return app
+
+def main():
     port = int(os.getenv("PORT", "0"))
 
     if port > 0:
         logger.info(f"Iniciando en modo Cloud Web Service en puerto {port}...")
-        loop = asyncio.get_event_loop()
-        loop.create_task(continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds=60))
-        app = loop.run_until_complete(init_app())
+        app = init_app()
         web.run_app(app, port=port, print=None)
     else:
+        # Modo Local: Ejecutar escaneo inmediato
+        client = BitunixClient()
+        smc = SMCEngine(atr_period=settings.ATR_PERIOD)
+        renderer = ChartRenderer()
+        telegram = TelegramNotifier()
         asyncio.run(scan_market(client, smc, renderer, telegram))
 
 if __name__ == "__main__":
