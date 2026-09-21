@@ -37,8 +37,8 @@ app_state = {
 }
 
 async def process_telegram_actions(telegram: TelegramNotifier):
-    """Revisa si el usuario presionó 'EJECUTAR' o 'DESCARTAR' en su Telegram."""
-    clicks = telegram.check_button_clicks()
+    """Revisa de forma asíncrona si el usuario presionó 'EJECUTAR' o 'DESCARTAR' en su Telegram."""
+    clicks = await asyncio.to_thread(telegram.check_button_clicks)
     for c in clicks:
         data = c.get("data", "")
         if data.startswith("exec:") or data.startswith("ex:"):
@@ -53,7 +53,8 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
                     logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
                     
-                    res = trader.execute_order(
+                    res = await asyncio.to_thread(
+                        trader.execute_order,
                         symbol=sym,
                         direction=direction,
                         entry_price=entry,
@@ -63,7 +64,7 @@ async def process_telegram_actions(telegram: TelegramNotifier):
                     )
                     
                     app_state["executed_orders"] += 1
-                    mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res["mode"] == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+                    mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
                     
                     receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
@@ -74,11 +75,13 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
                     
-                    telegram.send_message(receipt)
+                    await asyncio.to_thread(telegram.send_message, receipt)
 
                     tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
                     tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
-                    position_monitor.register_trade(
+                    
+                    await asyncio.to_thread(
+                        position_monitor.register_trade,
                         order_id=res.get('order_id', 'N/A'),
                         symbol=sym,
                         direction=direction,
@@ -92,12 +95,42 @@ async def process_telegram_actions(telegram: TelegramNotifier):
 
                 except Exception as ex:
                     logger.error(f"Error procesando orden de Telegram: {ex}")
-                    telegram.send_message(f"❌ Error al procesar la orden: {ex}")
+                    await asyncio.to_thread(telegram.send_message, f"❌ Error al procesar la orden: {ex}")
         elif data == "discard":
-            telegram.send_message("🗑️ Señal descartada.")
+            await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
+
+async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, renderer: ChartRenderer, telegram: TelegramNotifier):
+    """Escanea un único símbolo de forma asíncrona sin bloquear el event loop."""
+    try:
+        df_mtf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.MTF_INTERVAL, limit=120)
+        df_htf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.HTF_INTERVAL, limit=60)
+        
+        if df_mtf.empty or len(df_mtf) < 30:
+            return None, None
+
+        current_price = float(df_mtf['close'].iloc[-1])
+        analysis = await asyncio.to_thread(smc.analyze, sym, df_mtf, df_htf)
+        setups = analysis.get("setups", [])
+
+        dispatched = []
+        for s in setups:
+            chart_path = await asyncio.to_thread(renderer.render_trade_setup, df_mtf, s)
+            mc = await asyncio.to_thread(run_monte_carlo_simulation, win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
+            signal_text = SignalGenerator.format_signal_text(s, mc)
+            dispatched.append((s, signal_text, chart_path))
+
+            if telegram.is_configured():
+                logger.info(f"Enviando señal de {s.symbol} con botones de 1-Clic a Telegram...")
+                await asyncio.to_thread(telegram.send_signal, signal_text, chart_path, setup=s)
+
+        return current_price, dispatched
+
+    except Exception as e:
+        logger.error(f"Error escaneando {sym}: {e}")
+        return None, None
 
 async def scan_market(client, smc, renderer, telegram):
-    """Escanea las 10 criptomonedas más líquidas con Machine Learning y SMC."""
+    """Escanea las 10 criptomonedas más líquidas concurrentemente."""
     app_state["last_scan"] = datetime.now(timezone.utc).isoformat()
     app_state["scans_completed"] += 1
 
@@ -105,34 +138,14 @@ async def scan_market(client, smc, renderer, telegram):
     latest_prices = {}
 
     for sym in settings.DEFAULT_SYMBOLS:
-        try:
-            df_mtf = client.get_historical_klines(sym, interval=settings.MTF_INTERVAL, limit=120)
-            df_htf = client.get_historical_klines(sym, interval=settings.HTF_INTERVAL, limit=60)
-            
-            if df_mtf.empty or len(df_mtf) < 30:
-                continue
-
-            current_price = df_mtf['close'].iloc[-1]
-            latest_prices[sym] = current_price
-
-            analysis = smc.analyze(sym, df_mtf, df_htf)
-            setups = analysis.get("setups", [])
-
-            for s in setups:
-                chart_path = renderer.render_trade_setup(df_mtf, s)
-                mc = run_monte_carlo_simulation(win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
-                signal_text = SignalGenerator.format_signal_text(s, mc)
-                all_setups.append((s, signal_text, chart_path))
-
-                if telegram.is_configured():
-                    logger.info(f"Enviando señal de {s.symbol} con botones de 1-Clic a Telegram...")
-                    telegram.send_signal(signal_text, chart_path, setup=s)
-
-        except Exception as e:
-            logger.error(f"Error escaneando {sym}: {e}")
+        price, setups = await scan_single_symbol(sym, client, smc, renderer, telegram)
+        if price is not None:
+            latest_prices[sym] = price
+        if setups:
+            all_setups.extend(setups)
 
     if latest_prices:
-        position_monitor.check_market_prices(latest_prices)
+        await asyncio.to_thread(position_monitor.check_market_prices, latest_prices)
 
     if all_setups:
         app_state["signals_found"] += len(all_setups)
@@ -143,7 +156,10 @@ async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seco
     logger.info("Iniciando loop continuo 24/7 con Machine Learning y 1-Clic Telegram...")
     
     if telegram.is_configured():
-        telegram.send_message("🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube. Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos.")
+        await asyncio.to_thread(
+            telegram.send_message,
+            "🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube. Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos."
+        )
 
     loop_count = 0
     while True:
@@ -152,10 +168,13 @@ async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seco
             await scan_market(client, smc, renderer, telegram)
             loop_count += 1
             
-            # Cada 12 horas (720 ciclos de 60s), enviar un latido de confirmación a Telegram
-            if loop_count % 720 == 0 and telegram.is_configured():
+            # Cada 6 horas (360 ciclos de 60s), enviar un latido de confirmación a Telegram
+            if loop_count % 360 == 0 and telegram.is_configured():
                 now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                telegram.send_message(f"📡 [LATIDO TRADI]: Escáner 24/7 100% operativo ({now_str}). {app_state['scans_completed']} escaneos completados sin interrupciones.")
+                await asyncio.to_thread(
+                    telegram.send_message,
+                    f"📡 [LATIDO TRADI]: Escáner 24/7 100% operativo ({now_str}). {app_state['scans_completed']} escaneos completados sin interrupciones."
+                )
 
         except Exception as e:
             logger.error(f"Error en loop de escaneo: {e}")
@@ -197,7 +216,6 @@ def main():
         app = init_app()
         web.run_app(app, port=port, print=None)
     else:
-        # Modo Local: Ejecutar escaneo inmediato
         client = BitunixClient()
         smc = SMCEngine(atr_period=settings.ATR_PERIOD)
         renderer = ChartRenderer()

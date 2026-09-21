@@ -3164,5 +3164,42 @@
     },
     "status": "OPEN",
     "outcome": null
+  },
+  {
+    "timestamp": "2026-09-21T18:32:52.081716+00:00",
+    "symbol": "BNBUSDT",
+    "direction": "LONG",
+    "entry_price": 800.32,
+    "stop_loss": 795.32,
+    "tp2": 814.31,
+    "confidence_score": 83.0,
+    "features": {
+      "feat_norm_atr": 0.00577536842405892,
+      "feat_bb_width": 0.02172141258048342,
+      "feat_parkinson_vol": 0.0034634839171790856,
+      "feat_candle_expansion": 0.2654867256636994,
+      "feat_rvol_20": 0.2980960455963655,
+      "feat_volume_delta_proxy": -0.27407407407401174,
+      "feat_obv_slope": -0.18113935903430528,
+      "feat_vwap_dist": 0.023475493621361858,
+      "feat_dist_ema20": 0.003956163699029179,
+      "feat_dist_ema50": 0.012131496875503845,
+      "feat_dist_ema200": 0.0346076651496439,
+      "feat_mtf_trend_align": 1.0,
+      "feat_htf_trend_align": 1.0,
+      "feat_adx_14": 32.80937085161239,
+      "feat_rsi_14": 53.16318218843341,
+      "feat_rsi_divergence": -1.0,
+      "feat_body_ratio": 0.31851851851850294,
+      "feat_wick_asymmetry": 0.04444444444449123,
+      "feat_close_position": 0.36296296296299413,
+      "feat_roc_3": 0.004241222676738543,
+      "feat_hl_spike": 0.2920723226703572,
+      "feat_vol_concentration": 0.1444783835948322,
+      "feat_skew_proxy": -0.09303044351722034,
+      "feat_regime_entropy": 1.0
+    },
+    "status": "OPEN",
+    "outcome": null
   }
 ]
