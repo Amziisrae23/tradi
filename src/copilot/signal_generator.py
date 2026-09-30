@@ -58,7 +58,8 @@ class SignalGenerator:
 📊 𝐌É𝐓𝐑𝐈𝐂𝐀𝐒 & 𝐆𝐄𝐒𝐓𝐈Ó𝐍 𝐃𝐄 𝐑𝐈𝐄𝐒𝐆𝐎:
   ⚖️ Ratio Riesgo/Beneficio (R:R): 1 : {setup.rr_tp2}
   🤖 Confianza del Modelo: {setup.confidence_score:.1f}%
-  🛡️ Riesgo recomendado: 1.0% - 2.0% de tu cuenta
+  🛡️ Riesgo en Pérdida SL: 2.0% de tu cuenta (~$1.00 USD)
+  🔒 Margen Garantía Retenido: Máx 8% (~$4.00 USDT colateral)
 {mc_info}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━

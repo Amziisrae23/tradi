@@ -1,26 +1,22 @@
 # Tradi - Estado del Proyecto y Tareas
 
-Última actualización: 2026-09-30 (Sesión: Universo Multi-Activo & Capital Real $50 USDT)
+Última actualización: 2026-09-30 (Sesión: Control Estricto de Margen vs Riesgo para Cuentas de $50-$55 USD)
 
 ## 🆕 Completado en esta sesión
 
-- [x] `config/settings.py` — Expansión a **Universo Multi-Activo de 23 pares** en Bitunix:
-  - **Criptos Líderes & Altcoins:** BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, BNBUSDT, SUIUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, NEARUSDT, TAOUSDT, 1000PEPEUSDT, ONDOUSDT, ENAUSDT, WLDUSDT, UNIUSDT.
-  - **Materias Primas (Commodities):** Oro (`XAUUSDT`), Plata (`XAGUSDT`), Petróleo WTI (`CLUSDT`).
-  - **Acciones & Tokenizados de Innovación:** SpaceX Index (`SPCXUSDT`), Nvidia (`NVDAUSDT`), Tesla (`TSLAUSDT`).
-- [x] `src/exchanges/bitunix/trader.py` — Adaptación de precisión y dimensionamiento fraccional para commodities, acciones y tokens de bajo valor nominal.
-- [x] `src/intelligence/gemini_analyst.py` — Actualización del Árbitro Gemini para evaluación multi-activo (commodities, índices y cripto).
-- [x] `src/storage/trading_ledger.py` — Contabilidad cuantitativa SQLite (`tradi_ledger.db`) para auditoría de trades, P&L, Win Rate y Profit Factor.
-- [x] `src/intelligence/portfolio_risk.py` — Gestor de calor de cartera (`MAX_CONCURRENT_TRADES=2`) y Circuit Breaker diario (-5% límite diario).
-- [x] `src/copilot/telegram_notifier.py` — Parser interactivo de comandos de texto (`/balance`, `/stats`, `/historial`, `/mode auto`, `/mode manual`, `/pause`, `/resume`, `/help`).
-- [x] `run_copilot.py` — Soporte dual: Modo `MANUAL` (1-Clic Telegram) y Modo `AUTO` (colocación autónoma de órdenes en Bitunix tras aprobación de Gemini).
+- [x] `config/settings.py` — Implementación de **Doble Límite de Seguridad**:
+  - `MAX_MARGIN_PCT_PER_TRADE=0.08`: Límite de margen retenido por trade (máx 8% = ~$4.40 USD en $55 USDT).
+  - `MAX_LEVERAGE_NOTIONAL=2.5`: Hard cap de valor nocional para cuentas pequeñas ($137 USD máx).
+- [x] `src/exchanges/bitunix/trader.py` — Dimensionamiento triple acotado: `min(riesgo_sl, nocional_max, margen_max)` y retorno de `estimated_margin` en cada orden.
+- [x] `run_copilot.py` & `src/copilot/signal_generator.py` — Transparencia total en Telegram diferenciando **Riesgo en Pérdida SL** vs **Margen de Garantía Retenido**.
+- [x] `config/settings.py` — Expansión a **Universo Multi-Activo de 23 pares** en Bitunix (Cripto + Oro + Plata + Petróleo + SpaceX + Nvidia + Tesla).
 - [x] `tests/test_system.py` & `tests/test_scaling_suite.py` — 11/11 tests unitarios e integrales pasando al 100%.
 
 ## 🚀 Próximos Pasos (Al Reanudar / Desplegar en GCP)
 
 1. En la VM GCP: `cd /home/ubuntu/tradi && sudo git pull && sudo systemctl restart tradi.service`
 2. Probar comandos interactivos en Telegram: escribir `/balance`, `/stats`, `/help`.
-3. Monitorear el flujo de señales multi-activo (Cripto + Oro + Plata + Petróleo + SpaceX + Nvidia).
+3. Monitorear que las nuevas órdenes retengan solo ~$3 a $4.40 USDT de margen (dejando >85% de tu saldo libre).
 
 
 

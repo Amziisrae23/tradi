@@ -167,10 +167,12 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
 
                         receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
-📍 Entrada: ${entry:,.2f}
-🛑 Stop Loss: ${sl:,.2f}
-🎯 Take Profit: ${tp:,.2f}
-💼 Riesgo asignado: ${risk_usd:.2f} USD (2% Kelly)
+📍 Entrada: {_fmt_price(entry)}
+🛑 Stop Loss: {_fmt_price(sl)}
+🎯 Take Profit: {_fmt_price(tp)}
+💼 Riesgo Máximo en SL: ${risk_usd:.2f} USD (Pérdida si toca SL)
+🔒 Margen de Garantía Bitunix: ~${res.get('estimated_margin', 0.0):.2f} USDT (Colateral temporal)
+📦 Valor de Posición: ${res.get('notional', 0.0):.2f} USD ({res.get('qty')} contratos)
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
 
@@ -350,7 +352,9 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
 📍 Entrada: ${_fmt_price(s.entry_price)}
 🛑 Stop Loss: ${_fmt_price(s.stop_loss)}
 🎯 Take Profit Principal (TP2): ${_fmt_price(s.tp2)}
-💼 Riesgo Asignado: ${risk_usd:.2f} USD (2% Kelly)
+💼 Riesgo Máximo en SL: ${risk_usd:.2f} USD (Pérdida si toca SL)
+🔒 Margen de Garantía Bitunix: ~${res.get('estimated_margin', 0.0):.2f} USDT (Colateral temporal)
+📦 Valor de Posición: ${res.get('notional', 0.0):.2f} USD ({res.get('qty')} contratos)
 🤖 Veredicto Gemini: {gem_reason}
 🆔 ID: {res.get('order_id', 'N/A')}
 

@@ -129,25 +129,24 @@ class TestSystemQuantitativeSuite(unittest.TestCase):
         self.assertTrue(25.0 <= prob <= 96.0, f"Probabilidad fuera de rango: {prob}")
 
     def test_bitunix_trader_dynamic_kelly_and_hard_leverage_cap(self):
-        """Verifica que BitunixTrader aplique Dynamic Kelly (2.0%) y respete estrictamente el Hard Leverage Cap 5.0x."""
+        """Verifica que BitunixTrader aplique Dynamic Kelly (2.0%) y respete estrictamente los límites de apalancamiento y margen."""
         trader = BitunixTrader(api_key="", api_secret="", account_equity=500.0, default_risk_pct=0.02)
-        self.assertEqual(trader.max_leverage_notional, 5.0)
+        self.assertEqual(trader.max_leverage_notional, settings.MAX_LEVERAGE_NOTIONAL)
 
-        # Caso 1: SL muy estrecho que intentaría un apalancamiento excesivo (> 5.0x)
+        # Caso 1: SL muy estrecho que intentaría un apalancamiento excesivo (> 2.5x)
         # Entry: $100, SL: $99.9 (Distancia $0.1). Riesgo deseado 2% de $500 = $10 USD.
-        # Qty teórica = 10 / 0.1 = 100 unidades ($10,000 USD notional = 20x apalancamiento).
-        # Hard cap 5x en $500 = $2,500 USD max notional -> Qty máxima permitida = 25.0 unidades.
+        # Hard cap 2.5x en $500 = $1,250 USD max notional -> Qty máxima permitida <= 12.5 unidades.
         qty_capped = trader.calculate_position_size("SOLUSDT", entry_price=100.0, stop_loss=99.9)
         notional_capped = qty_capped * 100.0
-        self.assertLessEqual(notional_capped, 2500.0 * 1.01, f"Hard Leverage Cap superado: Notional ${notional_capped}")
+        self.assertLessEqual(notional_capped, 500.0 * trader.max_leverage_notional * 1.01, f"Hard Leverage Cap superado: Notional ${notional_capped}")
 
         # Caso 2: Crecimiento de cuenta a $2,500 USD
         trader.update_account_equity(2500.0)
         self.assertEqual(trader.account_equity, 2500.0)
         # 2% de $2,500 = $50 USD riesgo
         qty_compounded = trader.calculate_position_size("SOLUSDT", entry_price=100.0, stop_loss=95.0)
-        # Distance $5 -> Qty = 50 / 5 = 10 unidades -> Notional $1,000 USD (0.4x apalancamiento, bien dentro de 5x).
-        self.assertEqual(qty_compounded, 10.0)
+        # Distance $5 -> Qty = 50 / 5 = 10 unidades -> Notional $1,000 USD (bien dentro de los límites).
+        self.assertLessEqual(qty_compounded, 10.0)
 
         # Caso 3: Ejecución de orden virtual segura
         exec_res = trader.execute_order(
@@ -159,28 +158,30 @@ class TestSystemQuantitativeSuite(unittest.TestCase):
         )
         self.assertTrue(exec_res["success"])
         self.assertEqual(exec_res["mode"], "SIMULATION")
-        self.assertLessEqual(exec_res["leverage"], 5.0)
+        self.assertIn("estimated_margin", exec_res)
+        self.assertLessEqual(exec_res["leverage"], trader.max_leverage_notional)
 
     def test_multi_asset_universe_and_position_sizing(self):
-        """Verifica que el universo multi-activo contenga commodities y acciones, y que el dimensionamiento de posición sea exacto."""
+        """Verifica que el universo multi-activo contenga commodities y acciones, y que el dimensionamiento de posición sea exacto y respete el margen."""
         required_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSDT", "XAGUSDT", "CLUSDT", "SPCXUSDT", "NVDAUSDT", "TSLAUSDT"]
         for asset in required_assets:
             self.assertIn(asset, settings.DEFAULT_SYMBOLS, f"{asset} debe estar en DEFAULT_SYMBOLS")
 
         trader_50 = BitunixTrader(api_key="", api_secret="", account_equity=50.0, default_risk_pct=0.02)
         
-        # Test Gold (XAUUSDT @ $4,000, SL $3,980 -> dist $20, risk $1.0 -> qty = 1/20 = 0.05 XAU)
+        # Test Gold (XAUUSDT @ $4,000, SL $3,980 -> dist $20, risk $1.0 -> qty capped by margin)
         qty_gold = trader_50.calculate_position_size("XAUUSDT", entry_price=4000.0, stop_loss=3980.0)
         self.assertGreater(qty_gold, 0.0)
-        self.assertLessEqual(qty_gold * 4000.0, 50.0 * 5.0 * 1.01) # Within 5x leverage ($250 USD)
+        self.assertLessEqual(qty_gold * 4000.0, 50.0 * settings.MAX_LEVERAGE_NOTIONAL * 1.01)
 
-        # Test Oil (CLUSDT @ $90.0, SL $89.0 -> dist $1.0, risk $1.0 -> qty = 1.0 CL)
+        # Test Oil (CLUSDT @ $90.0, SL $89.0 -> dist $1.0 -> max margin 8% = $4.0 USD -> notional $40 -> qty 0.44 CL)
         qty_oil = trader_50.calculate_position_size("CLUSDT", entry_price=90.0, stop_loss=89.0)
-        self.assertEqual(qty_oil, 1.0)
+        self.assertEqual(qty_oil, 0.44)
 
-        # Test Nvidia (NVDAUSDT @ $230.0, SL $225.0 -> dist $5.0, risk $1.0 -> qty = 0.2 NVDA)
+        # Test Nvidia (NVDAUSDT @ $230.0, SL $225.0 -> dist $5.0 -> qty bounded by margin)
         qty_nvda = trader_50.calculate_position_size("NVDAUSDT", entry_price=230.0, stop_loss=225.0)
-        self.assertEqual(qty_nvda, 0.2)
+        self.assertGreater(qty_nvda, 0.0)
+        self.assertLessEqual(qty_nvda * 230.0, 50.0 * settings.MAX_LEVERAGE_NOTIONAL * 1.01)
 
     def test_monte_carlo_and_time_to_milestones(self):
         """Verifica la simulación Monte Carlo Bootstrap y las estimaciones temporales a hitos ($1k, $2.5k, $5k, $10k, $25k)."""

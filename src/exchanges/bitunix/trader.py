@@ -23,13 +23,14 @@ class BitunixTrader:
         self,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        account_equity: float = 500.0,
+        account_equity: float = 50.0,
         default_risk_pct: float = 0.02
     ):
         self.api_key = api_key if api_key is not None else settings.BITUNIX_API_KEY
         self.api_secret = api_secret if api_secret is not None else settings.BITUNIX_API_SECRET
         self.base_url = settings.BITUNIX_REST_URL
-        self.max_leverage_notional = 5.0
+        self.max_leverage_notional = getattr(settings, "MAX_LEVERAGE_NOTIONAL", 2.5)
+        self.max_margin_pct = getattr(settings, "MAX_MARGIN_PCT_PER_TRADE", 0.08)
         self.account_equity = account_equity
         self.default_risk_pct = default_risk_pct
 
@@ -62,11 +63,20 @@ class BitunixTrader:
         if risk_distance <= 0 or entry_price <= 0:
             return 0.001
         
+        # 1. Cantidad teórica según riesgo de pérdida en Stop Loss
         calculated_qty = target_risk / risk_distance
-        max_allowed_notional = equity * self.max_leverage_notional
-        max_allowed_qty = max_allowed_notional / entry_price
         
-        final_qty = min(calculated_qty, max_allowed_qty)
+        # 2. Hard Leverage Cap (Tope Nocional Máximo, e.g. 2.5x notional)
+        max_allowed_notional = equity * self.max_leverage_notional
+        max_allowed_qty_notional = max_allowed_notional / entry_price
+        
+        # 3. Límite de Margen Retenido (Máx 8% del balance retenido a 10x)
+        max_margin_usd = equity * self.max_margin_pct
+        max_notional_margin = max_margin_usd * 10.0
+        max_allowed_qty_margin = max_notional_margin / entry_price
+        
+        # Seleccionar la cantidad más segura que respete todos los filtros
+        final_qty = min(calculated_qty, max_allowed_qty_notional, max_allowed_qty_margin)
         min_qty = 5.0 / entry_price
         final_qty = max(final_qty, min_qty)
 
@@ -99,11 +109,12 @@ class BitunixTrader:
         qty = self.calculate_position_size(clean_symbol, entry_price, stop_loss, risk_usd=actual_risk_usd, current_equity=equity)
         notional_value = qty * entry_price
         leverage_used = notional_value / equity
+        estimated_margin = notional_value / 10.0 # Margen estimado retenido por Bitunix (10x colateral)
         side = "BUY" if direction.upper() == "LONG" else "SELL"
 
         if not self.is_configured():
             sim_id = f"SIM-{uuid.uuid4().hex[:8].upper()}"
-            logger.info(f"🟢 [SIMULACIÓN BITUNIX]: {clean_symbol} {direction} | Cantidad: {qty} ({leverage_used:.1f}x)")
+            logger.info(f"🟢 [SIMULACIÓN BITUNIX]: {clean_symbol} {direction} | Cantidad: {qty} ({leverage_used:.1f}x) | Margen: ${estimated_margin:.2f}")
             return {
                 "success": True,
                 "mode": "SIMULATION",
@@ -113,11 +124,12 @@ class BitunixTrader:
                 "entry_price": entry_price,
                 "qty": qty,
                 "notional": round(notional_value, 2),
+                "estimated_margin": round(estimated_margin, 2),
                 "leverage": round(leverage_used, 1),
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "risk_usd": actual_risk_usd,
-                "msg": f"Orden Virtual ejecutada: {qty} {clean_symbol} (${notional_value:.2f} USD, {leverage_used:.1f}x)"
+                "msg": f"Orden Virtual ejecutada: {qty} {clean_symbol} (Margen: ${estimated_margin:.2f} USDT, Riesgo SL: ${actual_risk_usd:.2f} USD)"
             }
 
         url = f"{self.base_url}/api/v1/futures/trade/place_order"
@@ -152,7 +164,7 @@ class BitunixTrader:
             data = res.json()
             if data.get("code") == 0:
                 order_id = data.get("data", {}).get("orderId", "OK")
-                logger.info(f"✔ Orden REAL enviada a Bitunix: ID {order_id}")
+                logger.info(f"✔ Orden REAL enviada a Bitunix: ID {order_id} | Margen: ${estimated_margin:.2f} USDT")
                 return {
                     "success": True,
                     "mode": "REAL",
@@ -161,8 +173,9 @@ class BitunixTrader:
                     "direction": direction,
                     "qty": qty,
                     "notional": round(notional_value, 2),
+                    "estimated_margin": round(estimated_margin, 2),
                     "risk_usd": actual_risk_usd,
-                    "msg": f"Orden REAL enviada a Bitunix: {qty} {clean_symbol} (Riesgo: ${actual_risk_usd:.2f} USD)"
+                    "msg": f"Orden REAL enviada a Bitunix: {qty} {clean_symbol} (Margen: ${estimated_margin:.2f} USDT, Riesgo SL: ${actual_risk_usd:.2f} USD)"
                 }
             else:
                 logger.error(f"Bitunix rechazó la orden: {data}")
