@@ -6,9 +6,12 @@ if sys.platform.startswith("win"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import os
+import time
 import asyncio
 import logging
+from typing import Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timezone
+import pandas as pd
 from aiohttp import web
 from rich.console import Console
 
@@ -100,8 +103,57 @@ async def process_telegram_actions(telegram: TelegramNotifier):
         elif data == "discard":
             await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
 
+# ── Cooldown: máximo 1 señal por par cada 60 minutos ──────────────────────────
+_last_signal_time: Dict[str, float] = {}
+SIGNAL_COOLDOWN_SECONDS = 3600  # 60 minutos
+
+def _check_macro_trend(symbol: str, df_htf: pd.DataFrame, direction: str) -> Tuple[bool, str]:
+    """
+    Pre-filtro de tendencia macro usando EMA50 en HTF (4H).
+    Retorna (ok, razón).
+    """
+    if df_htf is None or df_htf.empty or len(df_htf) < 20:
+        return True, "Sin datos HTF suficientes — se permite pasar"
+
+    close = df_htf["close"].astype(float)
+    # EMA adaptada a la longitud de velas disponibles (máx 50)
+    span = min(50, len(close))
+    ema50 = close.ewm(span=span, adjust=False).mean()
+    current_price = close.iloc[-1]
+    ema50_val = ema50.iloc[-1]
+
+    # Pendiente de la EMA
+    lookback = min(5, len(ema50) - 1)
+    ema_slope = (ema50.iloc[-1] - ema50.iloc[-1 - lookback]) / ema50.iloc[-1 - lookback] * 100 if lookback > 0 else 0.0
+
+    if direction == "LONG":
+        if current_price < ema50_val * 0.995:  # Margen de 0.5%
+            return False, f"{symbol} LONG RECHAZADO: precio ${_fmt_price(current_price)} BAJO EMA{span} 4H (${_fmt_price(ema50_val)}) — tendencia macro BAJISTA"
+        if ema_slope < -0.5:
+            return False, f"{symbol} LONG RECHAZADO: EMA{span} 4H cayendo {ema_slope:.2f}% — fuerte momentum bajista"
+    else:  # SHORT
+        if current_price > ema50_val * 1.005:
+            return False, f"{symbol} SHORT RECHAZADO: precio ${_fmt_price(current_price)} SOBRE EMA{span} 4H (${_fmt_price(ema50_val)}) — tendencia macro ALCISTA"
+        if ema_slope > 0.5:
+            return False, f"{symbol} SHORT RECHAZADO: EMA{span} 4H subiendo {ema_slope:.2f}% — fuerte momentum alcista"
+
+    return True, f"Tendencia macro alineada (precio vs EMA{span}: {((current_price/ema50_val)-1)*100:+.2f}%)"
+
+
+def _fmt_price(val: Optional[float]) -> str:
+    if val is None:
+        return "N/A"
+    if abs(val) < 0.001:
+        return f"${val:.6f}"
+    elif abs(val) < 1.0:
+        return f"${val:.4f}"
+    elif abs(val) < 10.0:
+        return f"${val:.3f}"
+    return f"${val:,.2f}"
+
+
 async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, renderer: ChartRenderer, telegram: TelegramNotifier, already_signaled: set):
-    """Escanea un único símbolo de forma asíncrona sin bloquear el event loop."""
+    """Escanea un único símbolo de forma asíncrona con triple filtro: SMC+ML → Macro EMA50 → Gemini Árbitro (Veto)."""
     try:
         df_mtf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.MTF_INTERVAL, limit=120)
         df_htf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.HTF_INTERVAL, limit=60)
@@ -115,32 +167,57 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
 
         dispatched = []
         for s in setups:
-            # ── Deduplicación: un par solo emite UNA señal por ciclo de 60 min ──
+            # ── FILTRO 0: Deduplicación por ciclo de escaneo ──
             dedup_key = f"{sym}_{s.direction}"
             if dedup_key in already_signaled:
-                logger.debug(f"Señal duplicada ignorada: {dedup_key}")
+                logger.debug(f"Señal duplicada ignorada en el ciclo: {dedup_key}")
                 continue
             already_signaled.add(dedup_key)
 
+            # ── FILTRO 1: Cooldown temporal (1 señal cada 60 min por par) ──
+            cooldown_key = f"{sym}_{s.direction}"
+            last_t = _last_signal_time.get(cooldown_key, 0)
+            elapsed = time.time() - last_t
+            if elapsed < SIGNAL_COOLDOWN_SECONDS:
+                remaining_min = int((SIGNAL_COOLDOWN_SECONDS - elapsed) / 60)
+                logger.info(f"⏳ Cooldown activo para {cooldown_key}: faltan {remaining_min} min para nueva señal.")
+                continue
+
+            # ── FILTRO 2: Tendencia Macro HTF 4H con EMA50 ──
+            macro_ok, macro_reason = _check_macro_trend(sym, df_htf, s.direction)
+            if not macro_ok:
+                logger.warning(f"🛑 [FILTRO MACRO 4H BLOQUEÓ]: {macro_reason}")
+                continue
+            logger.info(f"✅ [FILTRO MACRO 4H APROBÓ]: {macro_reason}")
+
+            # ── FILTRO 3: Gemini 2.0 Flash como Árbitro con poder de VETO ──
+            try:
+                verdict, gem_reason, gem_analysis = await gemini_analyst.evaluate_setup(s)
+            except Exception as e:
+                logger.warning(f"Error consultando Gemini para {sym}: {e}")
+                verdict, gem_reason, gem_analysis = "PASS", str(e), ""
+
+            if verdict == "RECHAZAR":
+                logger.warning(f"🤖🚫 [GEMINI VETÓ SEÑAL DE {sym} {s.direction}]: {gem_reason}")
+                continue
+
+            logger.info(f"🤖✅ [GEMINI APROBÓ SEÑAL DE {sym} {s.direction}]: {gem_reason}")
+
+            # ── Señal Aprobada: Renderizar y Enviar ──
             chart_path = await asyncio.to_thread(renderer.render_trade_setup, df_mtf, s)
             mc = await asyncio.to_thread(run_monte_carlo_simulation, win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
             signal_text = SignalGenerator.format_signal_text(s, mc)
 
-            try:
-                ai_analysis = await gemini_analyst.analyze_setup(s)
-            except Exception as e:
-                logger.warning(f"Error al analizar setup con Gemini para {s.symbol}: {e}")
-                ai_analysis = None
-
-            if ai_analysis and ai_analysis.strip():
-                final_text = f"🤖 ANÁLISIS IA — {s.symbol}\n━━━━━━━━━━━━━━━━━━━━━\n\"{ai_analysis.strip()}\"\n\n{signal_text}"
+            if gem_analysis and gem_analysis.strip():
+                final_text = f"🤖 ANÁLISIS IA (GEMINI 2.0) — {s.symbol}\n━━━━━━━━━━━━━━━━━━━━━\n\"{gem_analysis.strip()}\"\n\n{signal_text}"
             else:
                 final_text = signal_text
 
             dispatched.append((s, final_text, chart_path))
+            _last_signal_time[cooldown_key] = time.time()
 
             if telegram.is_configured():
-                logger.info(f"Enviando señal de {s.symbol} con botones de 1-Clic a Telegram...")
+                logger.info(f"Enviando señal APROBADA de {s.symbol} con botones de 1-Clic a Telegram...")
                 if hasattr(telegram, "send_signal"):
                     await asyncio.to_thread(telegram.send_signal, final_text, chart_path, setup=s)
                 elif hasattr(telegram, "notify_signal"):
