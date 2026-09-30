@@ -57,27 +57,51 @@ class BitunixClient(BaseExchangeClient):
             data = response.json()
 
             if data.get("code") == 0:
-                account_data = data.get("data", {})
-                # Intentar distintos campos según versión de API
-                equity = (
-                    account_data.get("equity") or
-                    account_data.get("totalEquity") or
-                    account_data.get("availableBalance") or
-                    account_data.get("walletBalance")
-                )
-                if equity is not None:
-                    equity_float = float(equity)
-                    logger.info(f"💰 Balance real de Bitunix: ${equity_float:,.2f} USDT")
-                    return max(equity_float, 10.0)
+                raw_acc = data.get("data", {})
+                equity = None
+                if isinstance(raw_acc, list):
+                    for item in raw_acc:
+                        if isinstance(item, dict):
+                            eq = (
+                                item.get("equity") or
+                                item.get("totalEquity") or
+                                item.get("availableBalance") or
+                                item.get("walletBalance") or
+                                item.get("available") or
+                                item.get("balance")
+                            )
+                            if eq is not None and float(eq) > 0:
+                                equity = eq
+                                break
+                    # Si no encontramos con balance positivo, tomar el primero si existe
+                    if equity is None and len(raw_acc) > 0 and isinstance(raw_acc[0], dict):
+                        equity = raw_acc[0].get("equity") or raw_acc[0].get("availableBalance") or raw_acc[0].get("balance")
+                elif isinstance(raw_acc, dict):
+                    equity = (
+                        raw_acc.get("equity") or
+                        raw_acc.get("totalEquity") or
+                        raw_acc.get("availableBalance") or
+                        raw_acc.get("walletBalance") or
+                        raw_acc.get("balance")
+                    )
 
-            logger.warning(f"No se pudo leer equity de Bitunix: {data}")
+                if equity is not None:
+                    try:
+                        equity_float = float(equity)
+                        if equity_float > 0:
+                            logger.info(f"💰 Balance real de Bitunix: ${equity_float:,.2f} USDT")
+                            return equity_float
+                    except (ValueError, TypeError):
+                        pass
+
+            logger.warning(f"No se detectó balance activo en Bitunix ({data.get('msg', 'sin fondos')})")
 
         except Exception as e:
             logger.warning(f"Error consultando balance de Bitunix: {e}")
 
-        # Fallback: leer capital desde .env o usar $500 por defecto
-        fallback = float(settings.INITIAL_CAPITAL) if hasattr(settings, "INITIAL_CAPITAL") else 500.0
-        logger.info(f"Usando capital por defecto: ${fallback:.2f} USDT")
+        # Fallback: leer capital configurado (por defecto $50.0)
+        fallback = getattr(settings, "INITIAL_CAPITAL", 50.0)
+        logger.info(f"Usando capital configurado: ${fallback:.2f} USDT")
         return fallback
 
     def get_historical_klines(self, symbol: str, interval: str = "15m", limit: int = 200) -> pd.DataFrame:

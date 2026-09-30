@@ -69,19 +69,25 @@ def _fmt_price(val: Optional[float]) -> str:
 
 class GeminiAnalyst:
     """
-    Árbitro Cuantitativo Institucional impulsado por Google Gemini 2.0 Flash.
+    Árbitro Cuantitativo Institucional impulsado por Google Gemini.
     Actúa como gatekeeper con poder de VETO: solo aprueba señales de alta convicción.
     """
+
+    CANDIDATE_MODELS = [
+        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite"
+    ]
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.0-flash",
+        model: Optional[str] = None,
         timeout: float = 12.0
     ):
         raw_key = api_key if api_key is not None else getattr(settings, "GEMINI_API_KEY", "")
         self.api_key: str = raw_key.strip() if (raw_key and isinstance(raw_key, str)) else ""
-        self.model: str = model
+        self.model: str = model or self.CANDIDATE_MODELS[0]
         self.timeout: float = timeout
         self.client: Optional[Any] = None
         self.afc_config: Optional[Any] = (
@@ -97,7 +103,7 @@ class GeminiAnalyst:
         if self.api_key:
             try:
                 self.client = genai.Client(api_key=self.api_key)
-                logger.info("GeminiAnalyst v2 (Árbitro) inicializado con modelo %s", self.model)
+                logger.info("GeminiAnalyst v2 (Árbitro) inicializado con modelos %s", self.CANDIDATE_MODELS)
             except Exception as e:
                 logger.warning("Fallo al inicializar cliente genai: %s", e)
                 self.client = None
@@ -236,18 +242,27 @@ class GeminiAnalyst:
                 automatic_function_calling=afc
             )
 
-            response = await asyncio.wait_for(
-                self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config
-                ),
-                timeout=self.timeout
-            )
+            response = None
+            for candidate_model in self.CANDIDATE_MODELS:
+                try:
+                    response = await asyncio.wait_for(
+                        self.client.aio.models.generate_content(
+                            model=candidate_model,
+                            contents=prompt,
+                            config=config
+                        ),
+                        timeout=self.timeout
+                    )
+                    if response and getattr(response, "text", None):
+                        self.model = candidate_model
+                        break
+                except Exception as model_err:
+                    logger.debug(f"Modelo {candidate_model} no respondió ({model_err}), intentando siguiente...")
+                    continue
 
             if not response or not getattr(response, "text", None):
-                logger.warning(f"Gemini retornó respuesta vacía para {symbol}")
-                return "PASS", "Respuesta vacía de Gemini", ""
+                logger.warning(f"Todos los modelos de Gemini fallaron para {symbol}")
+                return "PASS", "Modelos Gemini no disponibles", ""
 
             raw = response.text.strip()
             # Limpiar bloques ```json ... ```

@@ -209,7 +209,7 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
             signal_text = SignalGenerator.format_signal_text(s, mc)
 
             if gem_analysis and gem_analysis.strip():
-                final_text = f"🤖 ANÁLISIS IA (GEMINI 2.0) — {s.symbol}\n━━━━━━━━━━━━━━━━━━━━━\n\"{gem_analysis.strip()}\"\n\n{signal_text}"
+                final_text = f"🤖 ANÁLISIS IA (GEMINI) — {s.symbol}\n━━━━━━━━━━━━━━━━━━━━━\n\"{gem_analysis.strip()}\"\n\n{signal_text}"
             else:
                 final_text = signal_text
 

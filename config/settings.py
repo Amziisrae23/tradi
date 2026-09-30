@@ -39,7 +39,8 @@ class Settings(BaseModel):
     LTF_INTERVAL: str = "5m"   # Lower Timeframe (Entrada / Gatillo)
 
     # Risk Management
-    FIXED_RISK_USD: float = 10.0        # $10 USD de riesgo fijo por operación (2% de $500)
+    INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "50.0"))
+    FIXED_RISK_USD: float = float(os.getenv("FIXED_RISK_USD", "1.0"))        # Riesgo por operación (por defecto 2% de $50 = $1)
     MIN_RISK_REWARD_RATIO: float = 2.0  # R:R mínimo para emitir señal
     MIN_ML_CONFIDENCE: float = 75.0     # 75% de confianza mínima del modelo ML
     ATR_PERIOD: int = 14
