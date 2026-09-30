@@ -174,11 +174,20 @@ async def scan_market(client, smc, renderer, telegram):
 async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds: int = 60):
     """Loop continuo 24/7 garantizado sin pausas."""
     logger.info("Iniciando loop continuo 24/7 con Machine Learning y 1-Clic Telegram...")
-    
+
+    # Leer balance real de Bitunix al arrancar
+    current_equity = await asyncio.to_thread(client.get_account_balance)
+    risk_usd = round(current_equity * 0.02, 2)
+    trader.update_account_equity(current_equity)
+    logger.info(f"💰 Capital inicial leído de Bitunix: ${current_equity:,.2f} USDT | Riesgo/trade: ${risk_usd:.2f} USD")
+
     if telegram.is_configured():
         await asyncio.to_thread(
             telegram.send_message,
-            "🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube. Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos."
+            f"🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube.\n"
+            f"💰 Capital detectado: ${current_equity:,.2f} USDT\n"
+            f"⚖️ Riesgo por trade (2%): ${risk_usd:.2f} USD\n"
+            f"📡 Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos."
         )
 
     loop_count = 0
@@ -187,19 +196,26 @@ async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seco
             await process_telegram_actions(telegram)
             await scan_market(client, smc, renderer, telegram)
             loop_count += 1
-            
-            # Cada 6 horas (360 ciclos de 60s), enviar un latido de confirmación a Telegram
+
+            # Cada 6 horas (360 ciclos de 60s): actualizar balance y enviar latido
             if loop_count % 360 == 0 and telegram.is_configured():
+                current_equity = await asyncio.to_thread(client.get_account_balance)
+                risk_usd = round(current_equity * 0.02, 2)
+                trader.update_account_equity(current_equity)
                 now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                 await asyncio.to_thread(
                     telegram.send_message,
-                    f"📡 [LATIDO TRADI]: Escáner 24/7 100% operativo ({now_str}). {app_state['scans_completed']} escaneos completados sin interrupciones."
+                    f"📡 [LATIDO TRADI — {now_str}]\n"
+                    f"✅ Escáner 24/7 operativo · {app_state['scans_completed']} escaneos\n"
+                    f"💰 Capital actualizado: ${current_equity:,.2f} USDT\n"
+                    f"⚖️ Riesgo/trade activo: ${risk_usd:.2f} USD (2% dinámico)"
                 )
 
         except Exception as e:
             logger.error(f"Error en loop de escaneo: {e}")
 
         await asyncio.sleep(interval_seconds)
+
 
 async def handle_health(request):
     return web.json_response(app_state)
