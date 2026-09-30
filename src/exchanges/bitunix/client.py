@@ -88,9 +88,13 @@ class BitunixClient(BaseExchangeClient):
                 if equity is not None:
                     try:
                         equity_float = float(equity)
-                        if equity_float > 0:
+                        if equity_float > 0.5:
                             logger.info(f"💰 Balance real de Bitunix: ${equity_float:,.2f} USDT")
                             return equity_float
+                        else:
+                            fallback = getattr(settings, "INITIAL_CAPITAL", 50.0)
+                            logger.info(f"ℹ️ Balance en Bitunix es $0.00 USDT — usando capital configurado de ${fallback:.2f} USDT")
+                            return fallback
                     except (ValueError, TypeError):
                         pass
 

@@ -235,10 +235,13 @@ class GeminiAnalyst:
                 else None
             )
 
+            import re
+
             config = types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.1,       # Muy bajo: respuestas determinísticas y estrictas
-                max_output_tokens=400,
+                temperature=0.1,
+                max_output_tokens=1500,
+                response_mime_type="application/json",
                 automatic_function_calling=afc
             )
 
@@ -265,10 +268,16 @@ class GeminiAnalyst:
                 return "PASS", "Modelos Gemini no disponibles", ""
 
             raw = response.text.strip()
-            # Limpiar bloques ```json ... ```
+            # Limpiar bloques markdown si existen
             if "```" in raw:
-                raw = raw.split("```")[-2] if raw.count("```") >= 2 else raw
-                raw = raw.replace("json", "").strip()
+                matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
+                if matches:
+                    raw = matches[0].strip()
+
+            # Extraer primer bloque {...}
+            json_match = re.search(r"\{[\s\S]*\}", raw)
+            if json_match:
+                raw = json_match.group(0)
 
             data = json.loads(raw)
             verdict = str(data.get("verdict", "RECHAZAR")).upper().strip()
