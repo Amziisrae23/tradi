@@ -100,12 +100,12 @@ async def process_telegram_actions(telegram: TelegramNotifier):
         elif data == "discard":
             await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
 
-async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, renderer: ChartRenderer, telegram: TelegramNotifier):
+async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, renderer: ChartRenderer, telegram: TelegramNotifier, already_signaled: set):
     """Escanea un único símbolo de forma asíncrona sin bloquear el event loop."""
     try:
         df_mtf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.MTF_INTERVAL, limit=120)
         df_htf = await asyncio.to_thread(client.get_historical_klines, sym, interval=settings.HTF_INTERVAL, limit=60)
-        
+
         if df_mtf.empty or len(df_mtf) < 30:
             return None, None
 
@@ -115,6 +115,13 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
 
         dispatched = []
         for s in setups:
+            # ── Deduplicación: un par solo emite UNA señal por ciclo de 60 min ──
+            dedup_key = f"{sym}_{s.direction}"
+            if dedup_key in already_signaled:
+                logger.debug(f"Señal duplicada ignorada: {dedup_key}")
+                continue
+            already_signaled.add(dedup_key)
+
             chart_path = await asyncio.to_thread(renderer.render_trade_setup, df_mtf, s)
             mc = await asyncio.to_thread(run_monte_carlo_simulation, win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
             signal_text = SignalGenerator.format_signal_text(s, mc)
@@ -143,11 +150,27 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
                     else:
                         await asyncio.to_thread(notify_fn, setup=s, chart_bytes=chart_path, signal_text=final_text)
 
+            # ── Registrar automáticamente en monitor para seguimiento TP/SL ──
+            risk_usd = round(trader.account_equity * trader.default_risk_pct, 2)
+            position_monitor.register_trade(
+                order_id=f"SIG-{sym}-{s.direction[:1]}-{int(s.entry_price)}",
+                symbol=sym,
+                direction=s.direction,
+                entry_price=s.entry_price,
+                stop_loss=s.stop_loss,
+                tp1=s.tp1,
+                tp2=s.tp2,
+                tp3=s.tp3,
+                risk_usd=risk_usd
+            )
+            logger.info(f"📊 Trade registrado para monitoreo: {sym} {s.direction} | Riesgo: ${risk_usd:.2f}")
+
         return current_price, dispatched
 
     except Exception as e:
         logger.error(f"Error escaneando {sym}: {e}")
         return None, None
+
 
 async def scan_market(client, smc, renderer, telegram):
     """Escanea las 10 criptomonedas más líquidas concurrentemente."""
@@ -156,9 +179,10 @@ async def scan_market(client, smc, renderer, telegram):
 
     all_setups = []
     latest_prices = {}
+    already_signaled: set = set()  # Deduplicación por ciclo de escaneo
 
     for sym in settings.DEFAULT_SYMBOLS:
-        price, setups = await scan_single_symbol(sym, client, smc, renderer, telegram)
+        price, setups = await scan_single_symbol(sym, client, smc, renderer, telegram, already_signaled)
         if price is not None:
             latest_prices[sym] = price
         if setups:
@@ -170,6 +194,7 @@ async def scan_market(client, smc, renderer, telegram):
     if all_setups:
         app_state["signals_found"] += len(all_setups)
         logger.info(f"¡{len(all_setups)} señales de alta probabilidad detectadas y despachadas!")
+
 
 async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seconds: int = 60):
     """Loop continuo 24/7 garantizado sin pausas."""
