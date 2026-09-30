@@ -96,10 +96,11 @@ class TelegramNotifier:
         else:
             return self.send_message(signal_text, reply_markup=keyboard)
 
-    def check_button_clicks(self) -> List[Dict[str, Any]]:
+    def check_all_updates(self) -> List[Dict[str, Any]]:
         """
-        Consulta las actualizaciones de Telegram para detectar si el usuario
-        tocó el botón de 'EJECUTAR' o 'DESCARTAR' desde su celular.
+        Consulta las actualizaciones de Telegram para detectar tanto:
+        1. Clics en botones interactivos (callback_query)
+        2. Comandos de texto (/balance, /stats, /mode, /pause, /resume, /help)
         """
         if not self.is_configured():
             return []
@@ -115,18 +116,35 @@ class TelegramNotifier:
                 actions = []
                 for u in updates:
                     self.last_update_id = u["update_id"]
+                    # 1. Clic en botón interactivo
                     if "callback_query" in u:
                         cb = u["callback_query"]
                         cb_id = cb["id"]
                         cb_data = cb.get("data", "")
-                        
-                        # Responder al botón para quitar el ícono de carga en el celular
                         self.answer_callback_query(cb_id, "Procesando orden...")
-                        actions.append({"data": cb_data, "user": cb.get("from", {}).get("first_name", "")})
+                        actions.append({
+                            "type": "callback",
+                            "data": cb_data,
+                            "user": cb.get("from", {}).get("first_name", "")
+                        })
+                    # 2. Mensaje de texto (Comando)
+                    elif "message" in u and "text" in u["message"]:
+                        msg = u["message"]
+                        text = msg.get("text", "").strip()
+                        actions.append({
+                            "type": "command",
+                            "text": text,
+                            "user": msg.get("from", {}).get("first_name", "")
+                        })
                 return actions
         except Exception as e:
-            logger.debug(f"Error verificando clics de botones: {e}")
+            logger.debug(f"Error verificando actualizaciones de Telegram: {e}")
         return []
+
+    def check_button_clicks(self) -> List[Dict[str, Any]]:
+        """Método de compatibilidad con clics de botones."""
+        updates = self.check_all_updates()
+        return [{"data": u["data"], "user": u["user"]} for u in updates if u.get("type") == "callback"]
 
     def answer_callback_query(self, callback_query_id: str, text: str):
         url = f"{self.base_url}/answerCallbackQuery"
@@ -134,3 +152,4 @@ class TelegramNotifier:
             requests.post(url, json={"callback_query_id": callback_query_id, "text": text}, timeout=4)
         except Exception:
             pass
+

@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import logging
 from typing import Dict, Any, List, Optional
@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from config.settings import settings
 from src.intelligence.ml_model import brain
 from src.copilot.telegram_notifier import TelegramNotifier
+from src.storage.trading_ledger import ledger
 
 logger = logging.getLogger("PositionMonitor")
 ACTIVE_TRADES_FILE = os.path.join("data", "active_trades.json")
@@ -17,6 +18,10 @@ class PositionMonitor:
     def __init__(self, telegram: Optional[TelegramNotifier] = None):
         self.telegram = telegram or TelegramNotifier()
         self.active_trades = self._load_active_trades()
+
+    def get_active_trades(self) -> List[Dict[str, Any]]:
+        """Retorna las operaciones actualmente abiertas."""
+        return [t for t in self.active_trades if t.get("status") == "OPEN"]
 
     def _load_active_trades(self) -> List[Dict[str, Any]]:
         if os.path.exists(ACTIVE_TRADES_FILE):
@@ -44,9 +49,11 @@ class PositionMonitor:
         tp1: float,
         tp2: float,
         tp3: float,
-        risk_usd: float = 10.0
+        risk_usd: float = 10.0,
+        gemini_verdict: str = "EJECUTAR",
+        gemini_reason: str = ""
     ):
-        """Registra una nueva orden abierta para su seguimiento continuo."""
+        """Registra una nueva orden abierta para su seguimiento continuo y auditoría contable."""
         trade = {
             "order_id": order_id,
             "symbol": symbol,
@@ -65,7 +72,22 @@ class PositionMonitor:
         }
         self.active_trades.append(trade)
         self._save_active_trades()
-        logger.info(f"Trade registrado para monitoreo: {symbol} {direction} (ID: {order_id})")
+
+        # Auditoría contable en SQLite
+        ledger.record_trade_opened(
+            order_id=order_id,
+            symbol=symbol,
+            direction=direction,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            risk_usd=risk_usd,
+            gemini_verdict=gemini_verdict,
+            gemini_reason=gemini_reason
+        )
+        logger.info(f"Trade registrado para monitoreo y ledger: {symbol} {direction} (ID: {order_id})")
 
     def check_market_prices(self, current_prices: Dict[str, float]):
         """Comprueba si el precio actual tocó Take Profit o Stop Loss y notifica en Telegram."""
@@ -94,11 +116,15 @@ class PositionMonitor:
                 if price <= sl:
                     closed = True
                     if trade["tp1_hit"]:
-                        msg = f"🛡️ [CIERRE EN BREAKEVEN]: {sym} tocó tu punto de entrada protegido. Ganancia neta asegurada: +${risk_usd * 0.6:.2f} USD."
+                        pnl_u = round(risk_usd * 0.6, 2)
+                        msg = f"🛡️ [CIERRE EN BREAKEVEN]: {sym} tocó tu punto de entrada protegido. Ganancia neta asegurada: +${pnl_u:.2f} USD."
                         brain.update_feedback(sym, "WIN", actual_rr=0.6)
+                        ledger.record_trade_closed(order_id=trade["order_id"], exit_price=entry, pnl_usd=pnl_u, pnl_r=0.6, status="BREAKEVEN")
                     else:
-                        msg = f"🛑 [STOP LOSS EJECUTADO]: {sym} tocó el SL en ${sl:,.2f}.\n💼 Pérdida controlada al 2%: -${risk_usd:.2f} USD."
+                        pnl_u = -round(risk_usd, 2)
+                        msg = f"🛑 [STOP LOSS EJECUTADO]: {sym} tocó el SL en ${sl:,.2f}.\n💼 Pérdida controlada: -${risk_usd:.2f} USD."
                         brain.update_feedback(sym, "LOSS", actual_rr=-1.0)
+                        ledger.record_trade_closed(order_id=trade["order_id"], exit_price=sl, pnl_usd=pnl_u, pnl_r=-1.0, status="STOP_LOSS")
                     self.telegram.send_message(msg)
 
                 # 2. Checar TP1 (1.5R)
@@ -117,8 +143,10 @@ class PositionMonitor:
                 # 4. Checar TP3 (5.0R - Runner Final)
                 elif trade["tp2_hit"] and price >= tp3:
                     closed = True
-                    msg = f"🚀 [TP 3 RUNNER MÁXIMO (+5.0R)]: {sym} alcanzó ${tp3:,.2f}!\n🏆 Trade 100% completado con éxito: +${risk_usd * 2.8:.2f} USD netos."
+                    pnl_u = round(risk_usd * 2.8, 2)
+                    msg = f"🚀 [TP 3 RUNNER MÁXIMO (+5.0R)]: {sym} alcanzó ${tp3:,.2f}!\n🏆 Trade 100% completado con éxito: +${pnl_u:.2f} USD netos."
                     brain.update_feedback(sym, "WIN", actual_rr=2.8)
+                    ledger.record_trade_closed(order_id=trade["order_id"], exit_price=tp3, pnl_usd=pnl_u, pnl_r=2.8, status="TP3_TARGET")
                     self.telegram.send_message(msg)
 
             # === CHEQUEO SHORT ===
@@ -126,11 +154,15 @@ class PositionMonitor:
                 if price >= sl:
                     closed = True
                     if trade["tp1_hit"]:
-                        msg = f"🛡️ [CIERRE EN BREAKEVEN]: {sym} tocó tu punto de entrada protegido. Ganancia neta asegurada: +${risk_usd * 0.6:.2f} USD."
+                        pnl_u = round(risk_usd * 0.6, 2)
+                        msg = f"🛡️ [CIERRE EN BREAKEVEN]: {sym} tocó tu punto de entrada protegido. Ganancia neta asegurada: +${pnl_u:.2f} USD."
                         brain.update_feedback(sym, "WIN", actual_rr=0.6)
+                        ledger.record_trade_closed(order_id=trade["order_id"], exit_price=entry, pnl_usd=pnl_u, pnl_r=0.6, status="BREAKEVEN")
                     else:
-                        msg = f"🛑 [STOP LOSS EJECUTADO]: {sym} tocó el SL en ${sl:,.2f}.\n💼 Pérdida controlada al 2%: -${risk_usd:.2f} USD."
+                        pnl_u = -round(risk_usd, 2)
+                        msg = f"🛑 [STOP LOSS EJECUTADO]: {sym} tocó el SL en ${sl:,.2f}.\n💼 Pérdida controlada: -${risk_usd:.2f} USD."
                         brain.update_feedback(sym, "LOSS", actual_rr=-1.0)
+                        ledger.record_trade_closed(order_id=trade["order_id"], exit_price=sl, pnl_usd=pnl_u, pnl_r=-1.0, status="STOP_LOSS")
                     self.telegram.send_message(msg)
 
                 elif not trade["tp1_hit"] and price <= tp1:
@@ -146,8 +178,10 @@ class PositionMonitor:
 
                 elif trade["tp2_hit"] and price <= tp3:
                     closed = True
-                    msg = f"🚀 [TP 3 RUNNER MÁXIMO (+5.0R)]: {sym} cayó a ${tp3:,.2f}!\n🏆 Trade 100% completado con éxito: +${risk_usd * 2.8:.2f} USD netos."
+                    pnl_u = round(risk_usd * 2.8, 2)
+                    msg = f"🚀 [TP 3 RUNNER MÁXIMO (+5.0R)]: {sym} cayó a ${tp3:,.2f}!\n🏆 Trade 100% completado con éxito: +${pnl_u:.2f} USD netos."
                     brain.update_feedback(sym, "WIN", actual_rr=2.8)
+                    ledger.record_trade_closed(order_id=trade["order_id"], exit_price=tp3, pnl_usd=pnl_u, pnl_r=2.8, status="TP3_TARGET")
                     self.telegram.send_message(msg)
 
             if not closed:

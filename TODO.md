@@ -1,33 +1,23 @@
 # Tradi - Estado del Proyecto y Tareas
 
-Última actualización: 2026-09-29 (Sesión: Gemini AI Analyst + GCP Deployment)
+Última actualización: 2026-09-30 (Sesión: Arquitectura de Escalabilidad Institucional & Auto-Pilot)
 
 ## 🆕 Completado en esta sesión
 
-- [x] `src/intelligence/gemini_analyst.py` — Analista Gemini 2.0 Flash con fallback silencioso
-- [x] `run_copilot.py` — Integración Gemini: bloque `🤖 ANÁLISIS IA` antes de cada señal Telegram
-- [x] `config/settings.py` — `GEMINI_API_KEY` añadida
-- [x] `requirements.txt` — `google-genai>=0.8.0` añadido
-- [x] `deploy/setup_gcp.sh` — Script de instalación automática en GCP Ubuntu 22.04
-- [x] `deploy/tradi.service` — Daemon systemd 24/7 con `Restart=always`
-- [x] `deploy/GCP_DEPLOY_GUIDE.md` — Guía completa (9 secciones) en español
-- [x] Suites de tests adversariales para Gemini añadidas
-- [x] Git commit `978e757` + push a `Amziisrae23/tradi`
-
-## ⚠️ PENDIENTE: API Key de Gemini
-
-La key proporcionada (`AQ.Ab8...`) NO es el formato estándar de Google AI Studio.
-- Ir a https://aistudio.google.com → "Get API Key" → "Create API Key"
-- La key correcta empieza con `AIzaSy...`
-- Agregar al `.env` local: `GEMINI_API_KEY=AIzaSy...`
-- Agregar también en las variables de entorno de la VM GCP
+- [x] `src/storage/trading_ledger.py` — Contabilidad cuantitativa SQLite (`tradi_ledger.db`) para auditoría de trades, P&L, Win Rate y Profit Factor.
+- [x] `src/intelligence/portfolio_risk.py` — Gestor de calor de cartera (`MAX_CONCURRENT_TRADES=2`) y Circuit Breaker diario (-5% límite diario).
+- [x] `src/copilot/telegram_notifier.py` — Parser interactivo de comandos de texto (`/balance`, `/stats`, `/historial`, `/mode auto`, `/mode manual`, `/pause`, `/resume`, `/help`).
+- [x] `run_copilot.py` — Soporte dual: Modo `MANUAL` (1-Clic Telegram) y Modo `AUTO` (colocación autónoma de órdenes en Bitunix tras aprobación de Gemini).
+- [x] `src/intelligence/gemini_analyst.py` — Árbitro con Pydantic `TradeVerdictSchema`, fallback en cascada de modelos y 4,096 tokens de razonamiento.
+- [x] `tests/test_scaling_suite.py` — Suite de pruebas para Ledger y Gestión de Riesgo de Portafolio.
+- [x] `plan_escalabilidad_tradi.md` — Artefacto interactivo de escalabilidad institucional.
 
 ## 🚀 Próximos Pasos (Al Reanudar)
 
-1. Obtener API Key correcta de Gemini en [aistudio.google.com](https://aistudio.google.com)
-2. Crear VM GCP siguiendo `deploy/GCP_DEPLOY_GUIDE.md` paso a paso
-3. Ejecutar `bash deploy/setup_gcp.sh` en la VM para instalar todo
-4. Verificar que llegan señales con análisis IA a Telegram
+1. En la VM GCP: `cd /home/ubuntu/tradi && sudo git pull && sudo systemctl restart tradi.service`
+2. Probar comandos interactivos en Telegram: escribir `/balance`, `/stats`, `/help`.
+3. Alternar entre modo manual y automático según conveniencia: `/mode auto` o `/mode manual`.
+
 
 
 

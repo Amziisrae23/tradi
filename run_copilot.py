@@ -25,6 +25,8 @@ from src.copilot.signal_generator import SignalGenerator
 from src.copilot.telegram_notifier import TelegramNotifier
 from src.copilot.position_monitor import position_monitor
 from src.intelligence.gemini_analyst import gemini_analyst
+from src.intelligence.portfolio_risk import portfolio_risk
+from src.storage.trading_ledger import ledger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TradiCopilot")
@@ -33,6 +35,7 @@ console = Console(force_terminal=True)
 app_state = {
     "service": "Tradi Intelligent Copilot 24/7",
     "status": "running",
+    "execution_mode": settings.EXECUTION_MODE,
     "last_scan": None,
     "scans_completed": 0,
     "signals_found": 0,
@@ -40,68 +43,163 @@ app_state = {
     "monitored_symbols": settings.DEFAULT_SYMBOLS
 }
 
-async def process_telegram_actions(telegram: TelegramNotifier):
-    """Revisa de forma asíncrona si el usuario presionó 'EJECUTAR' o 'DESCARTAR' en su Telegram."""
-    clicks = await asyncio.to_thread(telegram.check_button_clicks)
-    for c in clicks:
-        data = c.get("data", "")
-        if data.startswith("exec:") or data.startswith("ex:"):
-            parts = data.split(":")
-            if len(parts) >= 5:
-                sym = parts[1]
-                direction = "LONG" if "L" in parts[2].upper() else "SHORT"
-                try:
-                    entry = float(parts[3])
-                    sl = float(parts[4])
-                    tp = float(parts[5]) if len(parts) >= 6 else (entry + 2.5 * abs(entry - sl))
+async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixClient):
+    """Procesa de forma asíncrona tanto clics en botones como comandos de texto en Telegram."""
+    updates = await asyncio.to_thread(telegram.check_all_updates)
+    for u in updates:
+        u_type = u.get("type")
 
-                    logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
-                    
-                    res = await asyncio.to_thread(
-                        trader.execute_order,
-                        symbol=sym,
-                        direction=direction,
-                        entry_price=entry,
-                        stop_loss=sl,
-                        take_profit=tp,
-                        risk_usd=settings.FIXED_RISK_USD
-                    )
-                    
-                    app_state["executed_orders"] += 1
-                    mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
-                    
-                    receipt = f"""{mode_label}
+        # ── 1. Comandos de texto (/balance, /stats, /mode, /pause, /resume, /historial, /help) ──
+        if u_type == "command":
+            cmd = u.get("text", "").strip().lower()
+            user_name = u.get("user", "Usuario")
+
+            if cmd == "/help" or cmd == "/ayuda" or cmd == "/start":
+                help_msg = """🤖 𝗧𝗥𝗔𝗗𝗜 𝗖𝗢𝗣𝗜𝗟𝗢𝗧 | 𝗖𝗢𝗠𝗔𝗡𝗗𝗢𝗦 𝗗𝗜𝗦𝗣𝗢𝗡𝗜𝗕𝗟𝗘𝗦
+
+💼 /balance ➔ Consulta saldo real en Bitunix y riesgo por trade
+📊 /stats ➔ Estadísticas contables (Win Rate, Profit Factor, P&L)
+📜 /historial ➔ Últimos 5 trades registrados en el ledger
+⚡ /mode auto ➔ Activa ejecución 100% autónoma (Manos Libres)
+🕹️ /mode manual ➔ Activa modo copiloto (requiere clic de confirmación)
+⏸️ /pause ➔ Pausa temporalmente nuevas aperturas de trades
+▶️ /resume ➔ Reanuda el escáner y aperturas normales
+ℹ️ /status ➔ Estado en vivo del bot y pares monitoreados"""
+                await asyncio.to_thread(telegram.send_message, help_msg)
+
+            elif cmd == "/balance" or cmd == "/saldo":
+                bal = await asyncio.to_thread(client.get_account_balance)
+                r_usd = round(bal * trader.default_risk_pct, 2)
+                active_t = position_monitor.get_active_trades()
+                bal_msg = f"""💰 𝗘𝗦𝗧𝗔𝗗𝗢 𝗗𝗘 𝗖𝗨𝗘𝗡𝗧𝗔 & 𝗖𝗔𝗣𝗜𝗧𝗔𝗟
+
+💵 Capital Activo: ${bal:,.2f} USDT
+🛡️ Riesgo por Trade (2% Kelly): ${r_usd:.2f} USD
+⚡ Modo de Ejecución: {app_state['execution_mode']}
+📈 Posiciones Abiertas ({len(active_t)}/{settings.MAX_CONCURRENT_TRADES}):"""
+                if active_t:
+                    for t in active_t:
+                        bal_msg += f"\n  • {t['symbol']} {t['direction']} @ ${t['entry_price']:,.2f} (SL: ${t['current_sl']:,.2f})"
+                else:
+                    bal_msg += "\n  • Sin posiciones activas en este momento."
+                await asyncio.to_thread(telegram.send_message, bal_msg)
+
+            elif cmd == "/stats" or cmd == "/metricas":
+                s = ledger.get_stats()
+                stats_msg = f"""📊 𝗟𝗘𝗗𝗚𝗘𝗥 𝗖𝗨𝗔𝗡𝗧𝗜𝗧𝗔𝗧𝗜𝗩𝗢 — 𝗘𝗦𝗧𝗔𝗗Í𝗦𝗧𝗜𝗖𝗔𝗦
+
+🎯 Win Rate: {s['win_rate']:.1f}% ({s['wins']}G - {s['losses']}P - {s['breakevens']}BE)
+💵 P&L Total Neto: ${s['total_pnl_usd']:+.2f} USD ({s['total_pnl_r']:+.2f}R)
+⚖️ Factor de Beneficio: {s['profit_factor']:.2f}
+📈 Ganancia Promedio: +${s['avg_win_usd']:.2f} USD
+📉 Pérdida Promedio: -${s['avg_loss_usd']:.2f} USD
+🔢 Total Trades Auditados: {s['total_trades']}"""
+                await asyncio.to_thread(telegram.send_message, stats_msg)
+
+            elif cmd.startswith("/mode"):
+                if "auto" in cmd:
+                    app_state["execution_mode"] = "AUTO"
+                    settings.EXECUTION_MODE = "AUTO"
+                    await asyncio.to_thread(telegram.send_message, "⚡ [MODO AUTÓNOMO ACTIVADO]: El bot colocará órdenes en Bitunix automáticamente tras la aprobación de Gemini IA.")
+                elif "manual" in cmd:
+                    app_state["execution_mode"] = "MANUAL"
+                    settings.EXECUTION_MODE = "MANUAL"
+                    await asyncio.to_thread(telegram.send_message, "🕹️ [MODO COPILOTO ACTIVADO]: El bot enviará señales a Telegram con botones interactivos para confirmación previa.")
+
+            elif cmd == "/pause" or cmd == "/pausar":
+                portfolio_risk.is_paused = True
+                await asyncio.to_thread(telegram.send_message, "⏸️ [BOT PAUSADO]: Se han congelado nuevas operaciones. Las posiciones abiertas continuarán siendo monitoreadas.")
+
+            elif cmd == "/resume" or cmd == "/reanudar":
+                portfolio_risk.is_paused = False
+                await asyncio.to_thread(telegram.send_message, "▶️ [BOT REANUDADO]: El escáner y la apertura de operaciones están 100% operativos.")
+
+            elif cmd == "/historial" or cmd == "/history":
+                recent = ledger.get_recent_trades(limit=5)
+                if not recent:
+                    await asyncio.to_thread(telegram.send_message, "📜 No hay trades finalizados en el ledger todavía.")
+                else:
+                    hist_msg = "📜 𝗨́𝗟𝗧𝗜𝗠𝗢𝗦 𝗧𝗥𝗔𝗗𝗘𝗦 𝗔𝗨𝗗𝗜𝗧𝗔𝗗𝗢𝗦:\n"
+                    for r in recent:
+                        status_emoji = "✅" if r.get("pnl_usd", 0) > 0 else ("🛑" if r.get("pnl_usd", 0) < 0 else "⚪")
+                        hist_msg += f"\n{status_emoji} {r['symbol']} {r['direction']} | PnL: ${r.get('pnl_usd', 0):+.2f} USD ({r['status']})"
+                    await asyncio.to_thread(telegram.send_message, hist_msg)
+
+            elif cmd == "/status" or cmd == "/estado":
+                st_msg = f"""ℹ️ 𝗘𝗦𝗧𝗔𝗗𝗢 𝗗𝗘𝗟 𝗦𝗜𝗦𝗧𝗘𝗠𝗔 𝗧𝗥𝗔𝗗𝗜 𝟮𝟰/𝟳
+
+🟢 Estado: {'PAUSADO ⏸️' if portfolio_risk.is_paused else 'OPERATIVO 🚀'}
+⚙️ Modo: {app_state['execution_mode']}
+📡 Escaneos Completados: {app_state['scans_completed']}
+🎯 Señales Detectadas: {app_state['signals_found']}
+💼 Órdenes Ejecutadas: {app_state['executed_orders']}
+🛡️ Circuit Breaker Diario: Máx {settings.DAILY_LOSS_LIMIT_PCT*100:.0f}% pérdida"""
+                await asyncio.to_thread(telegram.send_message, st_msg)
+
+        # ── 2. Clics en Botones Interactivos (1-Clic Execution) ──
+        elif u_type == "callback":
+            data = u.get("data", "")
+            if data.startswith("exec:") or data.startswith("ex:"):
+                parts = data.split(":")
+                if len(parts) >= 5:
+                    sym = parts[1]
+                    direction = "LONG" if "L" in parts[2].upper() else "SHORT"
+                    try:
+                        entry = float(parts[3])
+                        sl = float(parts[4])
+                        tp = float(parts[5]) if len(parts) >= 6 else (entry + 2.5 * abs(entry - sl))
+
+                        logger.info(f"⚡ [TELEGRAM 1-CLIC]: Usuario confirmó ejecución de {sym} {direction}")
+
+                        risk_usd = round(trader.account_equity * trader.default_risk_pct, 2)
+                        res = await asyncio.to_thread(
+                            trader.execute_order,
+                            symbol=sym,
+                            direction=direction,
+                            entry_price=entry,
+                            stop_loss=sl,
+                            take_profit=tp,
+                            risk_usd=risk_usd
+                        )
+
+                        app_state["executed_orders"] += 1
+                        mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+
+                        receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
 📍 Entrada: ${entry:,.2f}
 🛑 Stop Loss: ${sl:,.2f}
 🎯 Take Profit: ${tp:,.2f}
-💼 Riesgo asignado: ${settings.FIXED_RISK_USD:.2f} USD (2% Kelly)
+💼 Riesgo asignado: ${risk_usd:.2f} USD (2% Kelly)
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
-                    
-                    await asyncio.to_thread(telegram.send_message, receipt)
 
-                    tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
-                    tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
-                    
-                    await asyncio.to_thread(
-                        position_monitor.register_trade,
-                        order_id=res.get('order_id', 'N/A'),
-                        symbol=sym,
-                        direction=direction,
-                        entry_price=entry,
-                        stop_loss=sl,
-                        tp1=tp1,
-                        tp2=tp,
-                        tp3=tp3,
-                        risk_usd=settings.FIXED_RISK_USD
-                    )
+                        await asyncio.to_thread(telegram.send_message, receipt)
 
-                except Exception as ex:
-                    logger.error(f"Error procesando orden de Telegram: {ex}")
-                    await asyncio.to_thread(telegram.send_message, f"❌ Error al procesar la orden: {ex}")
-        elif data == "discard":
-            await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
+                        tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
+                        tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
+
+                        await asyncio.to_thread(
+                            position_monitor.register_trade,
+                            order_id=res.get('order_id', 'N/A'),
+                            symbol=sym,
+                            direction=direction,
+                            entry_price=entry,
+                            stop_loss=sl,
+                            tp1=tp1,
+                            tp2=tp,
+                            tp3=tp3,
+                            risk_usd=risk_usd,
+                            gemini_verdict="EJECUTAR",
+                            gemini_reason="Aprobada por confirmación manual de 1-Clic"
+                        )
+
+                    except Exception as ex:
+                        logger.error(f"Error procesando orden de Telegram: {ex}")
+                        await asyncio.to_thread(telegram.send_message, f"❌ Error al procesar la orden: {ex}")
+            elif data == "discard":
+                await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
+
 
 # ── Cooldown: máximo 1 señal por par cada 60 minutos ──────────────────────────
 _last_signal_time: Dict[str, float] = {}
@@ -203,7 +301,20 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
 
             logger.info(f"🤖✅ [GEMINI APROBÓ SEÑAL DE {sym} {s.direction}]: {gem_reason}")
 
-            # ── Señal Aprobada: Renderizar y Enviar ──
+            # ── FILTRO 4: Gestor de Riesgo de Portafolio & Circuit Breaker ──
+            active_trades_list = position_monitor.get_active_trades()
+            risk_approved, risk_reason = portfolio_risk.can_open_trade(
+                symbol=sym,
+                direction=s.direction,
+                active_trades=active_trades_list,
+                account_equity=trader.account_equity
+            )
+            if not risk_approved:
+                logger.warning(f"🛡️ [PORTFOLIO RISK BLOQUEÓ]: {risk_reason}")
+                continue
+            logger.info(f"🛡️ [PORTFOLIO RISK APROBÓ]: {risk_reason}")
+
+            # ── Señal Aprobada: Renderizar Gráfico ──
             chart_path = await asyncio.to_thread(renderer.render_trade_setup, df_mtf, s)
             mc = await asyncio.to_thread(run_monte_carlo_simulation, win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
             signal_text = SignalGenerator.format_signal_text(s, mc)
@@ -216,31 +327,83 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
             dispatched.append((s, final_text, chart_path))
             _last_signal_time[cooldown_key] = time.time()
 
-            if telegram.is_configured():
-                logger.info(f"Enviando señal APROBADA de {s.symbol} con botones de 1-Clic a Telegram...")
-                if hasattr(telegram, "send_signal"):
-                    await asyncio.to_thread(telegram.send_signal, final_text, chart_path, setup=s)
-                elif hasattr(telegram, "notify_signal"):
-                    notify_fn = getattr(telegram, "notify_signal")
-                    if asyncio.iscoroutinefunction(notify_fn):
-                        await notify_fn(setup=s, chart_bytes=chart_path, signal_text=final_text)
-                    else:
-                        await asyncio.to_thread(notify_fn, setup=s, chart_bytes=chart_path, signal_text=final_text)
-
-            # ── Registrar automáticamente en monitor para seguimiento TP/SL ──
             risk_usd = round(trader.account_equity * trader.default_risk_pct, 2)
-            position_monitor.register_trade(
-                order_id=f"SIG-{sym}-{s.direction[:1]}-{int(s.entry_price)}",
-                symbol=sym,
-                direction=s.direction,
-                entry_price=s.entry_price,
-                stop_loss=s.stop_loss,
-                tp1=s.tp1,
-                tp2=s.tp2,
-                tp3=s.tp3,
-                risk_usd=risk_usd
-            )
-            logger.info(f"📊 Trade registrado para monitoreo: {sym} {s.direction} | Riesgo: ${risk_usd:.2f}")
+
+            # ── MODO AUTÓNOMO vs MODO COPILOTO MANUAL ──
+            if app_state["execution_mode"] == "AUTO":
+                logger.info(f"⚡ [MODO AUTO]: Ejecutando orden de {s.symbol} {s.direction} automáticamente en Bitunix...")
+                res = await asyncio.to_thread(
+                    trader.execute_order,
+                    symbol=s.symbol,
+                    direction=s.direction,
+                    entry_price=s.entry_price,
+                    stop_loss=s.stop_loss,
+                    take_profit=s.tp2,
+                    risk_usd=risk_usd
+                )
+                app_state["executed_orders"] += 1
+                mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+
+                auto_receipt = f"""⚡ 𝗧𝗥𝗔𝗗𝗜 𝗔𝗨𝗧𝗢-𝗣𝗜𝗟𝗢𝗧 | 𝗢𝗥𝗗𝗘𝗡 𝗘𝗝𝗘𝗖𝗨𝗧𝗔𝗗𝗔 ⚡
+{mode_label}
+⚡ 𝐏𝐀𝐑: {s.symbol} | {s.direction}
+📍 Entrada: ${_fmt_price(s.entry_price)}
+🛑 Stop Loss: ${_fmt_price(s.stop_loss)}
+🎯 Take Profit Principal (TP2): ${_fmt_price(s.tp2)}
+💼 Riesgo Asignado: ${risk_usd:.2f} USD (2% Kelly)
+🤖 Veredicto Gemini: {gem_reason}
+🆔 ID: {res.get('order_id', 'N/A')}
+
+{final_text}"""
+                if telegram.is_configured():
+                    if chart_path and os.path.exists(chart_path):
+                        await asyncio.to_thread(telegram.send_photo, chart_path, caption=auto_receipt)
+                    else:
+                        await asyncio.to_thread(telegram.send_message, auto_receipt)
+
+                position_monitor.register_trade(
+                    order_id=res.get('order_id', f"AUTO-{sym}-{s.direction[:1]}-{int(s.entry_price)}"),
+                    symbol=sym,
+                    direction=s.direction,
+                    entry_price=s.entry_price,
+                    stop_loss=s.stop_loss,
+                    tp1=s.tp1,
+                    tp2=s.tp2,
+                    tp3=s.tp3,
+                    risk_usd=risk_usd,
+                    gemini_verdict=verdict,
+                    gemini_reason=gem_reason
+                )
+
+            else:
+                # Modo Manual: enviar señal con botones 1-Clic a Telegram
+                if telegram.is_configured():
+                    logger.info(f"Enviando señal APROBADA de {s.symbol} con botones de 1-Clic a Telegram...")
+                    if hasattr(telegram, "send_signal"):
+                        await asyncio.to_thread(telegram.send_signal, final_text, chart_path, setup=s)
+                    elif hasattr(telegram, "notify_signal"):
+                        notify_fn = getattr(telegram, "notify_signal")
+                        if asyncio.iscoroutinefunction(notify_fn):
+                            await notify_fn(setup=s, chart_bytes=chart_path, signal_text=final_text)
+                        else:
+                            await asyncio.to_thread(notify_fn, setup=s, chart_bytes=chart_path, signal_text=final_text)
+
+                # Registrar para monitoreo de precios
+                position_monitor.register_trade(
+                    order_id=f"SIG-{sym}-{s.direction[:1]}-{int(s.entry_price)}",
+                    symbol=sym,
+                    direction=s.direction,
+                    entry_price=s.entry_price,
+                    stop_loss=s.stop_loss,
+                    tp1=s.tp1,
+                    tp2=s.tp2,
+                    tp3=s.tp3,
+                    risk_usd=risk_usd,
+                    gemini_verdict=verdict,
+                    gemini_reason=gem_reason
+                )
+
+            logger.info(f"📊 Trade registrado para monitoreo y ledger: {sym} {s.direction} | Riesgo: ${risk_usd:.2f}")
 
         return current_price, dispatched
 
@@ -289,13 +452,15 @@ async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seco
             f"🟢 [TRADI COPILOT 24/7]: Sistema inteligente activo en la nube.\n"
             f"💰 Capital detectado: ${current_equity:,.2f} USDT\n"
             f"⚖️ Riesgo por trade (2%): ${risk_usd:.2f} USD\n"
-            f"📡 Escaneando los 10 pares de Bitunix en tiempo real cada 60 segundos."
+            f"⚙️ Modo de Ejecución: {app_state['execution_mode']} (escribe /mode auto o /mode manual)\n"
+            f"📡 Escaneando los 10 pares de Bitunix cada 60 segundos.\n"
+            f"💬 Escribe /help en este chat para ver todos los comandos."
         )
 
     loop_count = 0
     while True:
         try:
-            await process_telegram_actions(telegram)
+            await process_telegram_actions(telegram, client)
             await scan_market(client, smc, renderer, telegram)
             loop_count += 1
 
