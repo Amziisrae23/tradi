@@ -1,0 +1,26 @@
+[Unit]
+Description=Tradi Quantitative Crypto Trading Copilot 24/7 Daemon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/tradi
+EnvironmentFile=/home/ubuntu/tradi/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PORT=8080
+ExecStart=/home/ubuntu/tradi/venv/bin/python run_copilot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradi
+
+# Ajustes de estabilidad y descriptores para entorno e2-micro
+LimitNOFILE=65535
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

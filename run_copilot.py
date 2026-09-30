@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import io
 
 if sys.platform.startswith("win"):
@@ -21,6 +21,7 @@ from src.copilot.chart_renderer import ChartRenderer
 from src.copilot.signal_generator import SignalGenerator
 from src.copilot.telegram_notifier import TelegramNotifier
 from src.copilot.position_monitor import position_monitor
+from src.intelligence.gemini_analyst import gemini_analyst
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TradiCopilot")
@@ -117,11 +118,30 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
             chart_path = await asyncio.to_thread(renderer.render_trade_setup, df_mtf, s)
             mc = await asyncio.to_thread(run_monte_carlo_simulation, win_rate=s.confidence_score / 100.0, reward_risk=s.rr_tp2)
             signal_text = SignalGenerator.format_signal_text(s, mc)
-            dispatched.append((s, signal_text, chart_path))
+
+            try:
+                ai_analysis = await gemini_analyst.analyze_setup(s)
+            except Exception as e:
+                logger.warning(f"Error al analizar setup con Gemini para {s.symbol}: {e}")
+                ai_analysis = None
+
+            if ai_analysis and ai_analysis.strip():
+                final_text = f"🤖 ANÁLISIS IA — {s.symbol}\n━━━━━━━━━━━━━━━━━━━━━\n\"{ai_analysis.strip()}\"\n\n{signal_text}"
+            else:
+                final_text = signal_text
+
+            dispatched.append((s, final_text, chart_path))
 
             if telegram.is_configured():
                 logger.info(f"Enviando señal de {s.symbol} con botones de 1-Clic a Telegram...")
-                await asyncio.to_thread(telegram.send_signal, signal_text, chart_path, setup=s)
+                if hasattr(telegram, "send_signal"):
+                    await asyncio.to_thread(telegram.send_signal, final_text, chart_path, setup=s)
+                elif hasattr(telegram, "notify_signal"):
+                    notify_fn = getattr(telegram, "notify_signal")
+                    if asyncio.iscoroutinefunction(notify_fn):
+                        await notify_fn(setup=s, chart_bytes=chart_path, signal_text=final_text)
+                    else:
+                        await asyncio.to_thread(notify_fn, setup=s, chart_bytes=chart_path, signal_text=final_text)
 
         return current_price, dispatched
 

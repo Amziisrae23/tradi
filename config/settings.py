@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
@@ -15,6 +15,9 @@ class Settings(BaseModel):
     # Telegram Bot Config
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # Gemini AI Config
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
     # Top 10 Monitored Liquid Cryptocurrency Futures Pairs
     DEFAULT_SYMBOLS: List[str] = [
