@@ -38,8 +38,8 @@ except ImportError:
 logger = logging.getLogger("GeminiAnalyst")
 
 # ─── PROMPT SISTEMA: Gemini como Árbitro Cuantitativo con poder de VETO ───────
-SYSTEM_INSTRUCTION = """Eres el Árbitro Cuantitativo Institucional de un fondo de trading algorítmico.
-Tu ÚNICA función es evaluar si un setup de futuros de criptomonedas merece ser ejecutado.
+SYSTEM_INSTRUCTION = """Eres el Árbitro Cuantitativo Institucional de un fondo de trading algorítmico multi-activo.
+Tu ÚNICA función es evaluar si un setup de futuros (criptomonedas, commodities como oro/plata/petróleo o acciones/índices tecnológicos) merece ser ejecutado.
 Tienes PODER DE VETO ABSOLUTO. Si el setup no es sólido, lo RECHAZAS.
 
 CRITERIOS DE RECHAZO AUTOMÁTICO:

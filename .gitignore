@@ -1,4 +1,4 @@
-﻿# Logs
+# Logs
 logs
 *.log
 npm-debug.log*
@@ -60,3 +60,10 @@ Thumbs.db
 # Output files
 output/charts/*.png
 !output/charts/.gitkeep
+
+# Local Databases & Agent Cache
+*.db
+*.sqlite
+*.sqlite3
+.agents/
+

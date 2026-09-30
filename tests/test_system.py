@@ -161,6 +161,27 @@ class TestSystemQuantitativeSuite(unittest.TestCase):
         self.assertEqual(exec_res["mode"], "SIMULATION")
         self.assertLessEqual(exec_res["leverage"], 5.0)
 
+    def test_multi_asset_universe_and_position_sizing(self):
+        """Verifica que el universo multi-activo contenga commodities y acciones, y que el dimensionamiento de posición sea exacto."""
+        required_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSDT", "XAGUSDT", "CLUSDT", "SPCXUSDT", "NVDAUSDT", "TSLAUSDT"]
+        for asset in required_assets:
+            self.assertIn(asset, settings.DEFAULT_SYMBOLS, f"{asset} debe estar en DEFAULT_SYMBOLS")
+
+        trader_50 = BitunixTrader(api_key="", api_secret="", account_equity=50.0, default_risk_pct=0.02)
+        
+        # Test Gold (XAUUSDT @ $4,000, SL $3,980 -> dist $20, risk $1.0 -> qty = 1/20 = 0.05 XAU)
+        qty_gold = trader_50.calculate_position_size("XAUUSDT", entry_price=4000.0, stop_loss=3980.0)
+        self.assertGreater(qty_gold, 0.0)
+        self.assertLessEqual(qty_gold * 4000.0, 50.0 * 5.0 * 1.01) # Within 5x leverage ($250 USD)
+
+        # Test Oil (CLUSDT @ $90.0, SL $89.0 -> dist $1.0, risk $1.0 -> qty = 1.0 CL)
+        qty_oil = trader_50.calculate_position_size("CLUSDT", entry_price=90.0, stop_loss=89.0)
+        self.assertEqual(qty_oil, 1.0)
+
+        # Test Nvidia (NVDAUSDT @ $230.0, SL $225.0 -> dist $5.0, risk $1.0 -> qty = 0.2 NVDA)
+        qty_nvda = trader_50.calculate_position_size("NVDAUSDT", entry_price=230.0, stop_loss=225.0)
+        self.assertEqual(qty_nvda, 0.2)
+
     def test_monte_carlo_and_time_to_milestones(self):
         """Verifica la simulación Monte Carlo Bootstrap y las estimaciones temporales a hitos ($1k, $2.5k, $5k, $10k, $25k)."""
         mc = run_monte_carlo_simulation(

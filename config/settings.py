@@ -19,18 +19,34 @@ class Settings(BaseModel):
     # Gemini AI Config
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
-    # Top 10 Monitored Liquid Cryptocurrency Futures Pairs
+    # Multi-Asset Universe (Top Cryptos, Commodities & Tokenized Equities on Bitunix)
     DEFAULT_SYMBOLS: List[str] = [
+        # --- Top Cryptos Líquidas & Altcoins ---
         "BTCUSDT",
         "ETHUSDT",
         "SOLUSDT",
         "XRPUSDT",
         "DOGEUSDT",
+        "BNBUSDT",
         "SUIUSDT",
         "ADAUSDT",
         "AVAXUSDT",
         "LINKUSDT",
-        "BNBUSDT"
+        "NEARUSDT",
+        "TAOUSDT",
+        "1000PEPEUSDT",
+        "ONDOUSDT",
+        "ENAUSDT",
+        "WLDUSDT",
+        "UNIUSDT",
+        # --- Commodities (Materias Primas) ---
+        "XAUUSDT",  # Oro (Gold)
+        "XAGUSDT",  # Plata (Silver)
+        "CLUSDT",   # Petróleo Crudo Ligero (Crude Light Oil / WTI)
+        # --- Acciones & Activos Tecnológicos ---
+        "SPCXUSDT", # SpaceX Index
+        "NVDAUSDT", # Nvidia Corporation
+        "TSLAUSDT", # Tesla Inc.
     ]
     
     # Timeframes for Multi-Timeframe Analysis

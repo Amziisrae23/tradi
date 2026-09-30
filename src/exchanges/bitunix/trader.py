@@ -70,14 +70,14 @@ class BitunixTrader:
         min_qty = 5.0 / entry_price
         final_qty = max(final_qty, min_qty)
 
-        if "BTC" in symbol:
+        if any(c in symbol for c in ["BTC", "XAU"]):
             return round(final_qty, 3)
-        elif "ETH" in symbol:
+        elif any(c in symbol for c in ["ETH", "NVDA", "TSLA", "SPCX", "CL", "XAG"]):
             return round(final_qty, 2)
-        elif any(c in symbol for c in ["SOL", "AVAX", "LINK", "BNB"]):
+        elif any(c in symbol for c in ["SOL", "AVAX", "LINK", "BNB", "TAO"]):
             return round(final_qty, 1)
-        elif any(c in symbol for c in ["XRP", "DOGE", "SUI", "ADA"]):
-            return round(final_qty, 0)
+        elif any(c in symbol for c in ["XRP", "DOGE", "SUI", "ADA", "PEPE", "SHIB", "ENA", "ONDO", "NEAR", "WLD", "UNI"]):
+            return round(final_qty, 0) if final_qty >= 1.0 else round(final_qty, 2)
         return round(final_qty, 2)
 
     def execute_order(
