@@ -8,13 +8,23 @@ Si Gemini rechaza la señal → no se envía. Solo pasan señales que tienen dob
 
 import os
 import json
+import re
 import asyncio
 import logging
-from typing import Optional, Dict, Any, Tuple, Union
+from typing import Optional, Dict, Any, Tuple, Union, Literal
+from pydantic import BaseModel, Field
 import pandas as pd
 
 from config.settings import settings
 from src.patterns.types import TradeSetup
+
+
+class TradeVerdictSchema(BaseModel):
+    verdict: Literal["EJECUTAR", "RECHAZAR"] = Field(description="Dictamen final institucional")
+    reason: str = Field(description="Razón técnica concisa en 1 oración")
+    analysis: str = Field(description="Análisis cuantitativo de 3-4 oraciones si EJECUTAR, o vacío si RECHAZAR")
+    confidence_adjustment: float = Field(default=0.0, description="Ajuste numérico a la confianza del modelo (-20 a 10)")
+
 
 try:
     from google import genai
@@ -240,8 +250,9 @@ class GeminiAnalyst:
             config = types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.1,
-                max_output_tokens=1500,
+                max_output_tokens=4096,
                 response_mime_type="application/json",
+                response_schema=TradeVerdictSchema,
                 automatic_function_calling=afc
             )
 
@@ -279,7 +290,19 @@ class GeminiAnalyst:
             if json_match:
                 raw = json_match.group(0)
 
-            data = json.loads(raw)
+            # Sanitización de sintaxis inválida en JSON común:
+            # 1. Quitar signo '+' ilegal en números (ej: "confidence_adjustment": +5)
+            raw = re.sub(r':\s*\+(\d+(?:\.\d+)?)', r': \1', raw)
+            # 2. Quitar comas sobrantes al final de objetos o arrays (ej: {"a": 1, })
+            raw = re.sub(r',\s*([\}\]])', r'\1', raw)
+
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Fallback: intentar parsear directo con Pydantic
+                parsed_model = TradeVerdictSchema.model_validate_json(raw)
+                data = parsed_model.model_dump()
+
             verdict = str(data.get("verdict", "RECHAZAR")).upper().strip()
             reason = str(data.get("reason", "Sin razón especificada"))
             analysis = str(data.get("analysis", "")).strip()
