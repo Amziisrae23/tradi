@@ -10,6 +10,42 @@ from config.settings import settings
 
 logger = logging.getLogger("BitunixTrader")
 
+# Especificaciones exactas del mercado de futuros de Bitunix (basePrecision, minTradeVolume, quotePrecision)
+SYMBOL_SPECS: Dict[str, Dict[str, Any]] = {
+    "BTCUSDT": {"base_prec": 4, "min_vol": 0.0001, "quote_prec": 1},
+    "ETHUSDT": {"base_prec": 3, "min_vol": 0.003, "quote_prec": 2},
+    "SOLUSDT": {"base_prec": 2, "min_vol": 0.1, "quote_prec": 2},
+    "XRPUSDT": {"base_prec": 1, "min_vol": 2.0, "quote_prec": 4},
+    "DOGEUSDT": {"base_prec": 0, "min_vol": 53.0, "quote_prec": 5},
+    "BNBUSDT": {"base_prec": 2, "min_vol": 0.01, "quote_prec": 2},
+    "SUIUSDT": {"base_prec": 1, "min_vol": 10.0, "quote_prec": 4},
+    "ADAUSDT": {"base_prec": 0, "min_vol": 15.0, "quote_prec": 4},
+    "AVAXUSDT": {"base_prec": 0, "min_vol": 1.0, "quote_prec": 3},
+    "LINKUSDT": {"base_prec": 2, "min_vol": 0.1, "quote_prec": 3},
+    "NEARUSDT": {"base_prec": 0, "min_vol": 10.0, "quote_prec": 3},
+    "TAOUSDT": {"base_prec": 3, "min_vol": 0.02, "quote_prec": 2},
+    "1000PEPEUSDT": {"base_prec": 0, "min_vol": 790.0, "quote_prec": 7},
+    "ONDOUSDT": {"base_prec": 1, "min_vol": 20.0, "quote_prec": 4},
+    "ENAUSDT": {"base_prec": 0, "min_vol": 10.0, "quote_prec": 5},
+    "WLDUSDT": {"base_prec": 0, "min_vol": 6.0, "quote_prec": 4},
+    "UNIUSDT": {"base_prec": 0, "min_vol": 2.0, "quote_prec": 3},
+    "XAUUSDT": {"base_prec": 3, "min_vol": 0.002, "quote_prec": 2},
+    "XAGUSDT": {"base_prec": 3, "min_vol": 0.1, "quote_prec": 2},
+    "CLUSDT": {"base_prec": 1, "min_vol": 0.1, "quote_prec": 2},
+    "SPCXUSDT": {"base_prec": 2, "min_vol": 0.05, "quote_prec": 2},
+    "NVDAUSDT": {"base_prec": 2, "min_vol": 0.01, "quote_prec": 2},
+    "TSLAUSDT": {"base_prec": 2, "min_vol": 0.02, "quote_prec": 2},
+}
+
+def get_symbol_spec(symbol: str) -> Dict[str, Any]:
+    clean = symbol.replace("/", "").replace("-", "").upper()
+    if clean in SYMBOL_SPECS:
+        return SYMBOL_SPECS[clean]
+    for k, v in SYMBOL_SPECS.items():
+        if clean in k or k in clean:
+            return v
+    return {"base_prec": 2, "min_vol": 0.01, "quote_prec": 2}
+
 class BitunixTrader:
     """
     Cliente oficial para ejecución institucional de futuros en Bitunix:
@@ -77,18 +113,17 @@ class BitunixTrader:
         
         # Seleccionar la cantidad más segura que respete todos los filtros
         final_qty = min(calculated_qty, max_allowed_qty_notional, max_allowed_qty_margin)
-        min_qty = 5.0 / entry_price
-        final_qty = max(final_qty, min_qty)
 
-        if any(c in symbol for c in ["BTC", "XAU"]):
-            return round(final_qty, 3)
-        elif any(c in symbol for c in ["ETH", "NVDA", "TSLA", "SPCX", "CL", "XAG"]):
-            return round(final_qty, 2)
-        elif any(c in symbol for c in ["SOL", "AVAX", "LINK", "BNB", "TAO"]):
-            return round(final_qty, 1)
-        elif any(c in symbol for c in ["XRP", "DOGE", "SUI", "ADA", "PEPE", "SHIB", "ENA", "ONDO", "NEAR", "WLD", "UNI"]):
-            return round(final_qty, 0) if final_qty >= 1.0 else round(final_qty, 2)
-        return round(final_qty, 2)
+        spec = get_symbol_spec(symbol)
+        base_prec = spec.get("base_prec", 2)
+        min_vol = spec.get("min_vol", 0.01)
+
+        # Respetar el volumen mínimo del exchange
+        final_qty = max(final_qty, min_vol)
+
+        if base_prec == 0:
+            return float(round(final_qty))
+        return round(final_qty, base_prec)
 
     def execute_order(
         self,
@@ -106,6 +141,13 @@ class BitunixTrader:
         actual_risk_usd = risk_usd if risk_usd is not None else (equity * pct)
 
         clean_symbol = symbol.replace("/", "").replace("-", "").upper()
+        if clean_symbol == "PEPEUSDT":
+            clean_symbol = "1000PEPEUSDT"
+
+        spec = get_symbol_spec(clean_symbol)
+        quote_prec = spec.get("quote_prec", 2)
+        base_prec = spec.get("base_prec", 2)
+
         qty = self.calculate_position_size(clean_symbol, entry_price, stop_loss, risk_usd=actual_risk_usd, current_equity=equity)
         notional_value = qty * entry_price
         leverage_used = notional_value / equity
@@ -136,15 +178,20 @@ class BitunixTrader:
         nonce = uuid.uuid4().hex
         timestamp = str(int(time.time() * 1000))
 
+        formatted_entry = f"{entry_price:.{quote_prec}f}"
+        formatted_sl = f"{stop_loss:.{quote_prec}f}"
+        formatted_tp = f"{take_profit:.{quote_prec}f}"
+        formatted_qty = f"{int(qty)}" if base_prec == 0 else f"{qty:.{base_prec}f}"
+
         payload = {
             "symbol": clean_symbol,
             "side": side,
             "orderType": "LIMIT",
             "tradeSide": "OPEN",
-            "price": str(entry_price),
-            "qty": str(qty),
-            "slPrice": str(stop_loss),
-            "tpPrice": str(take_profit)
+            "price": formatted_entry,
+            "qty": formatted_qty,
+            "slPrice": formatted_sl,
+            "tpPrice": formatted_tp
         }
 
         body_str = json.dumps(payload, separators=(',', ':'))
@@ -179,10 +226,32 @@ class BitunixTrader:
                 }
             else:
                 logger.error(f"Bitunix rechazó la orden: {data}")
-                return {"success": False, "mode": "REAL", "msg": data.get("msg", "Error en Bitunix")}
+                return {
+                    "success": False,
+                    "mode": "REAL",
+                    "order_id": "N/A",
+                    "symbol": clean_symbol,
+                    "direction": direction,
+                    "qty": qty,
+                    "notional": round(notional_value, 2),
+                    "estimated_margin": round(estimated_margin, 2),
+                    "risk_usd": actual_risk_usd,
+                    "msg": data.get("msg", f"Error en Bitunix (code {data.get('code')})")
+                }
         except Exception as e:
             logger.error(f"Excepción en Bitunix: {e}")
-            return {"success": False, "mode": "REAL", "msg": str(e)}
+            return {
+                "success": False,
+                "mode": "REAL",
+                "order_id": "N/A",
+                "symbol": clean_symbol,
+                "direction": direction,
+                "qty": qty,
+                "notional": round(notional_value, 2),
+                "estimated_margin": round(estimated_margin, 2),
+                "risk_usd": actual_risk_usd,
+                "msg": str(e)
+            }
 
     def get_open_positions(self) -> list:
         """Consulta posiciones abiertas directamente en Bitunix."""

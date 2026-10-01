@@ -1,27 +1,25 @@
 # Tradi - Estado del Proyecto y Tareas
 
-Última actualización: 2026-10-01 (Sesión: Cierre Real de Posiciones en Bitunix & Reconciliación 24/7)
+Última actualización: 2026-10-01 (Sesión: Precisión Exacta de Órdenes Bitunix & Manejo Antifallos de Rechazos)
 
 ## 🆕 Completado en esta sesión
 
-- [x] `src/exchanges/bitunix/trader.py` — Implementación de métodos nativos para gestión de posiciones en vivo:
-  - `get_open_positions()`: Consulta en tiempo real las posiciones abiertas en Bitunix (`/api/v1/futures/position/get_pending_positions`).
-  - `close_position(position_id, symbol)`: Cierre instantáneo al mercado vía Flash Close (`/api/v1/futures/trade/flash_close_position`).
-  - `close_all_positions()`: Cierre de emergencia para todas las posiciones activas.
-- [x] `src/copilot/position_monitor.py` — Cierre real automático y reconciliación de estados:
-  - Cuando el precio toca Stop Loss, Breakeven o TP3, ahora ejecuta el **cierre real en Bitunix** inmediatamente.
-  - `reconcile_with_exchange()`: Sincroniza cada 60s el estado local con Bitunix para eliminar posiciones fantasma.
-- [x] `run_copilot.py` — Nuevos comandos interactivos en Telegram:
-  - `/posiciones` ➔ Muestra las posiciones abiertas reales en Bitunix con su PnL en vivo, margen y precio de entrada.
-  - `/close <par>` o `/close all` ➔ Cierra posiciones en Bitunix con 1 solo comando.
-  - Cooldown de señales optimizado a 15 minutos (1 vela MTF) para mayor dinamismo.
-- [x] `tests/test_scaling_suite.py` & `tests/test_system.py` — 12/12 tests unitarios e integrales pasando al 100%.
+- [x] `src/exchanges/bitunix/trader.py` — Integración de `SYMBOL_SPECS` nativo de Bitunix:
+  - Tabla de especificaciones exactas para los 23 pares (`base_prec`, `min_vol`, `quote_prec`) obtenida directamente del endpoint `/api/v1/futures/market/trading_pairs`.
+  - Corrección de precisión en BNBUSDT (2 decimales y volumen mínimo $\ge 0.01\text{ BNB}$) y resto de activos.
+  - Formateo de precios (`entry`, `slPrice`, `tpPrice`) y cantidades (`qty`) respetando los límites estrictos del exchange.
+  - Retorno detallado de error (`success: False`, código de error y mensaje de Bitunix) en caso de fallo.
+- [x] `run_copilot.py` — Validación estricta y protección contra órdenes fantasma:
+  - Verificación estricta `if res.get("success"):` tanto en ejecución 1-Clic de Telegram como en Auto-Pilot.
+  - En caso de rechazo por Bitunix, ahora envía una notificación clara: `❌ [ORDEN RECHAZADA EN BITUNIX]: {motivo}` y **NO** registra la orden en `position_monitor` ni en el `ledger`.
+  - En modo Manual, las señales sugeridas no se registran como posiciones abiertas hasta que el usuario hace clic en "EJECUTAR".
+- [x] `tests/test_system.py` & `tests/test_scaling_suite.py` — 12/12 tests unitarios e integrales pasando al 100%.
 
 ## 🚀 Próximos Pasos (Despliegue Inmediato en GCP)
 
 1. En la VM GCP: `cd /home/ubuntu/tradi && sudo git pull && sudo systemctl restart tradi.service`
-2. Escribir `/posiciones` en Telegram para auditar las órdenes activas en Bitunix.
-3. El bot ahora gestionará en tiempo real la apertura, movimiento a Breakeven y cierre efectivo en el exchange.
+2. Escribir `/status` y `/posiciones` en Telegram para auditar el estado del bot.
+3. Todas las órdenes enviadas ahora cumplen con la precisión y volumen mínimo exacto de Bitunix.
 
 
 

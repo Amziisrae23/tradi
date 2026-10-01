@@ -174,9 +174,14 @@ class TestSystemQuantitativeSuite(unittest.TestCase):
         self.assertGreater(qty_gold, 0.0)
         self.assertLessEqual(qty_gold * 4000.0, 50.0 * settings.MAX_LEVERAGE_NOTIONAL * 1.01)
 
-        # Test Oil (CLUSDT @ $90.0, SL $89.0 -> dist $1.0 -> max margin 8% = $4.0 USD -> notional $40 -> qty 0.44 CL)
+        # Test Oil (CLUSDT @ $90.0, SL $89.0 -> dist $1.0 -> max margin 8% = $4.0 USD -> notional $40 -> qty 0.4 CL con base_prec 1)
         qty_oil = trader_50.calculate_position_size("CLUSDT", entry_price=90.0, stop_loss=89.0)
-        self.assertEqual(qty_oil, 0.44)
+        self.assertEqual(qty_oil, 0.4)
+
+        # Test BNB (BNBUSDT @ $600.0, SL $580.0 -> dist $20.0 -> risk $1.0 -> qty 0.05 BNB con base_prec 2)
+        qty_bnb = trader_50.calculate_position_size("BNBUSDT", entry_price=600.0, stop_loss=580.0)
+        self.assertEqual(qty_bnb, 0.05)
+        self.assertGreaterEqual(qty_bnb, 0.01)
 
         # Test Nvidia (NVDAUSDT @ $230.0, SL $225.0 -> dist $5.0 -> qty bounded by margin)
         qty_nvda = trader_50.calculate_position_size("NVDAUSDT", entry_price=230.0, stop_loss=225.0)

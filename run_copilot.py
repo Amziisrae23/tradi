@@ -200,10 +200,11 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
                             risk_usd=risk_usd
                         )
 
-                        app_state["executed_orders"] += 1
-                        mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+                        if res.get("success"):
+                            app_state["executed_orders"] += 1
+                            mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
 
-                        receipt = f"""{mode_label}
+                            receipt = f"""{mode_label}
 ⚡ 𝐏𝐀𝐑: {sym} | {direction}
 📍 Entrada: {_fmt_price(entry)}
 🛑 Stop Loss: {_fmt_price(sl)}
@@ -214,25 +215,34 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
 🆔 ID: {res.get('order_id', 'N/A')}
 ℹ️ {res.get('msg', 'Ejecutada con éxito')}"""
 
-                        await asyncio.to_thread(telegram.send_message, receipt)
+                            await asyncio.to_thread(telegram.send_message, receipt)
 
-                        tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
-                        tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
+                            tp1 = entry + (1.5 * abs(entry - sl)) if direction == "LONG" else entry - (1.5 * abs(entry - sl))
+                            tp3 = entry + (5.0 * abs(entry - sl)) if direction == "LONG" else entry - (5.0 * abs(entry - sl))
 
-                        await asyncio.to_thread(
-                            position_monitor.register_trade,
-                            order_id=res.get('order_id', 'N/A'),
-                            symbol=sym,
-                            direction=direction,
-                            entry_price=entry,
-                            stop_loss=sl,
-                            tp1=tp1,
-                            tp2=tp,
-                            tp3=tp3,
-                            risk_usd=risk_usd,
-                            gemini_verdict="EJECUTAR",
-                            gemini_reason="Aprobada por confirmación manual de 1-Clic"
-                        )
+                            await asyncio.to_thread(
+                                position_monitor.register_trade,
+                                order_id=res.get('order_id', 'N/A'),
+                                symbol=sym,
+                                direction=direction,
+                                entry_price=entry,
+                                stop_loss=sl,
+                                tp1=tp1,
+                                tp2=tp,
+                                tp3=tp3,
+                                risk_usd=risk_usd,
+                                gemini_verdict="EJECUTAR",
+                                gemini_reason="Aprobada por confirmación manual de 1-Clic"
+                            )
+                        else:
+                            logger.warning(f"❌ [1-CLIC] Orden {sym} rechazada por Bitunix: {res.get('msg')}")
+                            rejection_msg = f"""❌ 𝗢𝗥𝗗𝗘𝗡 𝗥𝗘𝗖𝗛𝗔𝗭𝗔𝗗𝗔 𝗣𝗢𝗥 𝗕𝗜𝗧𝗨𝗡𝗜𝗫
+⚡ 𝐏𝐀𝐑: {sym} | {direction}
+📍 Entrada: {_fmt_price(entry)}
+🛑 Stop Loss: {_fmt_price(sl)}
+⚠️ Motivo: {res.get('msg', 'Error desconocido')}
+ℹ️ La orden NO fue ejecutada ni registrada en tus posiciones."""
+                            await asyncio.to_thread(telegram.send_message, rejection_msg)
 
                     except Exception as ex:
                         logger.error(f"Error procesando orden de Telegram: {ex}")
@@ -381,10 +391,11 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
                     take_profit=s.tp2,
                     risk_usd=risk_usd
                 )
-                app_state["executed_orders"] += 1
-                mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
+                if res.get("success"):
+                    app_state["executed_orders"] += 1
+                    mode_label = "🟢 [ORDEN REAL EN BITUNIX]" if res.get("mode") == "REAL" else "🧪 [ORDEN VIRTUAL SIMULADA]"
 
-                auto_receipt = f"""⚡ 𝗧𝗥𝗔𝗗𝗜 𝗔𝗨𝗧𝗢-𝗣𝗜𝗟𝗢𝗧 | 𝗢𝗥𝗗𝗘𝗡 𝗘𝗝𝗘𝗖𝗨𝗧𝗔𝗗𝗔 ⚡
+                    auto_receipt = f"""⚡ 𝗧𝗥𝗔𝗗𝗜 𝗔𝗨𝗧𝗢-𝗣𝗜𝗟𝗢𝗧 | 𝗢𝗥𝗗𝗘𝗡 𝗘𝗝𝗘𝗖𝗨𝗧𝗔𝗗𝗔 ⚡
 {mode_label}
 ⚡ 𝐏𝐀𝐑: {s.symbol} | {s.direction}
 📍 Entrada: ${_fmt_price(s.entry_price)}
@@ -397,25 +408,36 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
 🆔 ID: {res.get('order_id', 'N/A')}
 
 {final_text}"""
-                if telegram.is_configured():
-                    if chart_path and os.path.exists(chart_path):
-                        await asyncio.to_thread(telegram.send_photo, chart_path, caption=auto_receipt)
-                    else:
-                        await asyncio.to_thread(telegram.send_message, auto_receipt)
+                    if telegram.is_configured():
+                        if chart_path and os.path.exists(chart_path):
+                            await asyncio.to_thread(telegram.send_photo, chart_path, caption=auto_receipt)
+                        else:
+                            await asyncio.to_thread(telegram.send_message, auto_receipt)
 
-                position_monitor.register_trade(
-                    order_id=res.get('order_id', f"AUTO-{sym}-{s.direction[:1]}-{int(s.entry_price)}"),
-                    symbol=sym,
-                    direction=s.direction,
-                    entry_price=s.entry_price,
-                    stop_loss=s.stop_loss,
-                    tp1=s.tp1,
-                    tp2=s.tp2,
-                    tp3=s.tp3,
-                    risk_usd=risk_usd,
-                    gemini_verdict=verdict,
-                    gemini_reason=gem_reason
-                )
+                    position_monitor.register_trade(
+                        order_id=res.get('order_id', f"AUTO-{sym}-{s.direction[:1]}-{int(s.entry_price)}"),
+                        symbol=sym,
+                        direction=s.direction,
+                        entry_price=s.entry_price,
+                        stop_loss=s.stop_loss,
+                        tp1=s.tp1,
+                        tp2=s.tp2,
+                        tp3=s.tp3,
+                        risk_usd=risk_usd,
+                        gemini_verdict=verdict,
+                        gemini_reason=gem_reason
+                    )
+                    logger.info(f"📊 Trade registrado para monitoreo y ledger: {sym} {s.direction} | Riesgo: ${risk_usd:.2f}")
+                else:
+                    logger.warning(f"❌ [AUTO-PILOT] Orden {s.symbol} rechazada por Bitunix: {res.get('msg')}")
+                    auto_reject_msg = f"""❌ 𝗧𝗥𝗔𝗗𝗜 𝗔𝗨𝗧𝗢-𝗣𝗜𝗟𝗢𝗧 | 𝗢𝗥𝗗𝗘𝗡 𝗥𝗘𝗖𝗛𝗔𝗭𝗔𝗗𝗔
+⚡ 𝐏𝐀𝐑: {s.symbol} | {s.direction}
+📍 Entrada: ${_fmt_price(s.entry_price)}
+🛑 Stop Loss: ${_fmt_price(s.stop_loss)}
+⚠️ Motivo del rechazo: {res.get('msg', 'Error desconocido')}
+ℹ️ La orden no pudo colocarse en Bitunix y no fue registrada."""
+                    if telegram.is_configured():
+                        await asyncio.to_thread(telegram.send_message, auto_reject_msg)
 
             else:
                 # Modo Manual: enviar señal con botones 1-Clic a Telegram
@@ -429,23 +451,6 @@ async def scan_single_symbol(sym: str, client: BitunixClient, smc: SMCEngine, re
                             await notify_fn(setup=s, chart_bytes=chart_path, signal_text=final_text)
                         else:
                             await asyncio.to_thread(notify_fn, setup=s, chart_bytes=chart_path, signal_text=final_text)
-
-                # Registrar para monitoreo de precios
-                position_monitor.register_trade(
-                    order_id=f"SIG-{sym}-{s.direction[:1]}-{int(s.entry_price)}",
-                    symbol=sym,
-                    direction=s.direction,
-                    entry_price=s.entry_price,
-                    stop_loss=s.stop_loss,
-                    tp1=s.tp1,
-                    tp2=s.tp2,
-                    tp3=s.tp3,
-                    risk_usd=risk_usd,
-                    gemini_verdict=verdict,
-                    gemini_reason=gem_reason
-                )
-
-            logger.info(f"📊 Trade registrado para monitoreo y ledger: {sym} {s.direction} | Riesgo: ${risk_usd:.2f}")
 
         return current_price, dispatched
 
