@@ -8,12 +8,13 @@ from config.settings import settings
 from src.intelligence.ml_model import brain
 from src.copilot.telegram_notifier import TelegramNotifier
 from src.storage.trading_ledger import ledger
+from src.exchanges.bitunix.trader import trader
 
 logger = logging.getLogger("PositionMonitor")
 ACTIVE_TRADES_FILE = os.path.join("data", "active_trades.json")
 
 class PositionMonitor:
-    """Monitorea el estado de las operaciones abiertas y envía notificaciones de Ganancia/Pérdida a Telegram."""
+    """Monitorea el estado de las operaciones abiertas, sincroniza con Bitunix y ejecuta cierres automáticos."""
 
     def __init__(self, telegram: Optional[TelegramNotifier] = None):
         self.telegram = telegram or TelegramNotifier()
@@ -49,7 +50,7 @@ class PositionMonitor:
         tp1: float,
         tp2: float,
         tp3: float,
-        risk_usd: float = 10.0,
+        risk_usd: float = 1.0,
         gemini_verdict: str = "EJECUTAR",
         gemini_reason: str = ""
     ):
@@ -89,8 +90,37 @@ class PositionMonitor:
         )
         logger.info(f"Trade registrado para monitoreo y ledger: {symbol} {direction} (ID: {order_id})")
 
+    def reconcile_with_exchange(self):
+        """Sincroniza las posiciones registradas con las posiciones reales abiertas en Bitunix."""
+        if not trader.is_configured():
+            return
+
+        try:
+            real_positions = trader.get_open_positions()
+            real_symbols = {p.get("symbol", "").upper() for p in real_positions if p.get("symbol")}
+
+            updated_trades = []
+            for t in self.active_trades:
+                sym = t.get("symbol", "").upper()
+                if sym in real_symbols:
+                    updated_trades.append(t)
+                else:
+                    logger.info(f"ℹ️ [RECONCILIACIÓN]: {sym} ya no tiene posición abierta en Bitunix (cerrada en exchange).")
+                    ledger.record_trade_closed(
+                        order_id=t.get("order_id", "N/A"),
+                        exit_price=t.get("current_sl", t.get("entry_price", 0.0)),
+                        pnl_usd=0.0,
+                        pnl_r=0.0,
+                        status="EXCHANGE_CLOSED"
+                    )
+
+            self.active_trades = updated_trades
+            self._save_active_trades()
+        except Exception as e:
+            logger.warning(f"Error durante reconciliación con Bitunix: {e}")
+
     def check_market_prices(self, current_prices: Dict[str, float]):
-        """Comprueba si el precio actual tocó Take Profit o Stop Loss y notifica en Telegram."""
+        """Comprueba si el precio actual tocó Take Profit o Stop Loss, ejecuta el cierre real en Bitunix y notifica."""
         remaining_trades = []
 
         for trade in self.active_trades:
@@ -112,7 +142,7 @@ class PositionMonitor:
 
             # === CHEQUEO LONG ===
             if direction == "LONG":
-                # 1. Checar Stop Loss
+                # 1. Checar Stop Loss / Breakeven
                 if price <= sl:
                     closed = True
                     if trade["tp1_hit"]:
@@ -131,7 +161,7 @@ class PositionMonitor:
                 elif not trade["tp1_hit"] and price >= tp1:
                     trade["tp1_hit"] = True
                     trade["current_sl"] = entry  # Mover SL a Breakeven
-                    msg = f"🎉 [TP 1 ALCANZADO (+1.5R)]: {sym} superó ${tp1:,.2f}!\n💰 Ganancia del 40% asegurada: +${risk_usd * 0.6:.2f} USD.\n🛡️ Stop Loss movido a Breakeven (${entry:,.2f}) - ¡Trade libre de riesgo!"
+                    msg = f"🎉 [TP 1 ALCANZADO (+1.5R)]: {sym} superó ${tp1:,.2f}!\n💰 Ganancia asegurada del 40%: +${risk_usd * 0.6:.2f} USD.\n🛡️ Stop Loss movido a Breakeven (${entry:,.2f}) - ¡Trade protegido y libre de riesgo!"
                     self.telegram.send_message(msg)
 
                 # 3. Checar TP2 (3.0R - Target Principal)
@@ -168,7 +198,7 @@ class PositionMonitor:
                 elif not trade["tp1_hit"] and price <= tp1:
                     trade["tp1_hit"] = True
                     trade["current_sl"] = entry
-                    msg = f"🎉 [TP 1 ALCANZADO (+1.5R)]: {sym} cayó a ${tp1:,.2f}!\n💰 Ganancia del 40% asegurada: +${risk_usd * 0.6:.2f} USD.\n🛡️ Stop Loss movido a Breakeven (${entry:,.2f}) - ¡Trade libre de riesgo!"
+                    msg = f"🎉 [TP 1 ALCANZADO (+1.5R)]: {sym} cayó a ${tp1:,.2f}!\n💰 Ganancia asegurada del 40%: +${risk_usd * 0.6:.2f} USD.\n🛡️ Stop Loss movido a Breakeven (${entry:,.2f}) - ¡Trade protegido y libre de riesgo!"
                     self.telegram.send_message(msg)
 
                 elif trade["tp1_hit"] and not trade["tp2_hit"] and price <= tp2:
@@ -184,10 +214,24 @@ class PositionMonitor:
                     ledger.record_trade_closed(order_id=trade["order_id"], exit_price=tp3, pnl_usd=pnl_u, pnl_r=2.8, status="TP3_TARGET")
                     self.telegram.send_message(msg)
 
-            if not closed:
+            if closed:
+                # Ejecutar cierre real en Bitunix si existe la posición
+                try:
+                    if trader.is_configured():
+                        real_positions = trader.get_open_positions()
+                        for p in real_positions:
+                            if p.get("symbol", "").upper() == sym.upper():
+                                pid = p.get("positionId")
+                                if pid:
+                                    trader.close_position(pid, sym)
+                                    logger.info(f"✔ Posición real de {sym} (ID: {pid}) CERRADA en Bitunix automáticamente.")
+                except Exception as ex:
+                    logger.error(f"Error cerrando posición en Bitunix para {sym}: {ex}")
+            else:
                 remaining_trades.append(trade)
 
         self.active_trades = remaining_trades
         self._save_active_trades()
 
 position_monitor = PositionMonitor()
+

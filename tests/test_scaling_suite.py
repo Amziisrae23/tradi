@@ -103,3 +103,34 @@ class TestScalingSuite:
         approved, reason = risk_mgr.can_open_trade("XRPUSDT", "LONG", [], account_equity=50.0)
         assert approved is False
         assert "modo PAUSA" in reason
+
+    def test_position_monitor_live_reconciliation_and_close(self):
+        from src.copilot.position_monitor import PositionMonitor
+        from src.exchanges.bitunix.trader import BitunixTrader
+
+        mon = PositionMonitor()
+        mon.active_trades = []
+
+        # Registrar trade virtual
+        mon.register_trade(
+            order_id="TEST-SIM-CLOSE",
+            symbol="LINKUSDT",
+            direction="LONG",
+            entry_price=14.0,
+            stop_loss=13.5,
+            tp1=14.5,
+            tp2=15.0,
+            tp3=16.0,
+            risk_usd=1.0
+        )
+        assert len(mon.get_active_trades()) == 1
+
+        # Simular gatillo de SL: price = 13.4 <= 13.5
+        mon.check_market_prices({"LINKUSDT": 13.4})
+        assert len(mon.get_active_trades()) == 0
+
+        # Probar trader close methods en simulación
+        trader_sim = BitunixTrader(api_key="", api_secret="")
+        close_res = trader_sim.close_position("POS-123", "LINKUSDT")
+        assert close_res["success"] is True
+        assert close_res["mode"] == "SIMULATION"

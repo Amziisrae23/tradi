@@ -58,7 +58,9 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
                 help_msg = """🤖 𝗧𝗥𝗔𝗗𝗜 𝗖𝗢𝗣𝗜𝗟𝗢𝗧 | 𝗖𝗢𝗠𝗔𝗡𝗗𝗢𝗦 𝗗𝗜𝗦𝗣𝗢𝗡𝗜𝗕𝗟𝗘𝗦
 
 💼 /balance ➔ Consulta saldo real en Bitunix y riesgo por trade
-📊 /stats ➔ Estadísticas contables (Win Rate, Profit Factor, P&L)
+📊 /posiciones ➔ Muestra posiciones abiertas en Bitunix y su PnL en vivo
+❌ /close <par> ➔ Cierra posición en Bitunix (ej. /close SOLUSDT o /close all)
+📈 /stats ➔ Estadísticas contables (Win Rate, Profit Factor, P&L)
 📜 /historial ➔ Últimos 5 trades registrados en el ledger
 ⚡ /mode auto ➔ Activa ejecución 100% autónoma (Manos Libres)
 🕹️ /mode manual ➔ Activa modo copiloto (requiere clic de confirmación)
@@ -76,13 +78,49 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
 💵 Capital Activo: ${bal:,.2f} USDT
 🛡️ Riesgo por Trade (2% Kelly): ${r_usd:.2f} USD
 ⚡ Modo de Ejecución: {app_state['execution_mode']}
-📈 Posiciones Abiertas ({len(active_t)}/{settings.MAX_CONCURRENT_TRADES}):"""
+📈 Posiciones Monitoreadas ({len(active_t)}/{settings.MAX_CONCURRENT_TRADES}):"""
                 if active_t:
                     for t in active_t:
-                        bal_msg += f"\n  • {t['symbol']} {t['direction']} @ ${t['entry_price']:,.2f} (SL: ${t['current_sl']:,.2f})"
+                        bal_msg += f"\n  • {t['symbol']} {t['direction']} @ ${_fmt_price(t['entry_price'])} (SL: ${_fmt_price(t['current_sl'])})"
                 else:
                     bal_msg += "\n  • Sin posiciones activas en este momento."
                 await asyncio.to_thread(telegram.send_message, bal_msg)
+
+            elif cmd == "/posiciones" or cmd == "/positions":
+                open_pos = await asyncio.to_thread(trader.get_open_positions)
+                if not open_pos:
+                    await asyncio.to_thread(telegram.send_message, "📊 No hay posiciones abiertas actualmente en Bitunix.")
+                else:
+                    pos_msg = f"📊 𝗣𝗢𝗦𝗜𝗖𝗜𝗢𝗡𝗘𝗦 𝗔𝗕𝗜𝗘𝗥𝗧𝗔𝗦 𝗘𝗡 𝗕𝗜𝗧𝗨𝗡𝗜𝗫 ({len(open_pos)}):\n"
+                    for p in open_pos:
+                        sym = p.get('symbol')
+                        side = p.get('side')
+                        qty = p.get('qty')
+                        margin = float(p.get('margin', 0))
+                        entry_p = float(p.get('avgOpenPrice', 0))
+                        pnl = float(p.get('unrealizedPNL', 0))
+                        p_emoji = "🟢" if pnl >= 0 else "🔴"
+                        pos_msg += f"\n• {sym} {side} ({qty} contratos)\n  📍 Entrada: ${_fmt_price(entry_p)} | Margen: ${margin:.2f} USDT\n  {p_emoji} PnL en vivo: ${pnl:+.2f} USD\n  🆔 ID: {p.get('positionId')}\n"
+                    await asyncio.to_thread(telegram.send_message, pos_msg)
+
+            elif cmd.startswith("/close") or cmd.startswith("/cerrar"):
+                parts = cmd.split()
+                if len(parts) >= 2:
+                    target = parts[1].upper()
+                    if target == "ALL" or target == "TODO":
+                        results = await asyncio.to_thread(trader.close_all_positions)
+                        await asyncio.to_thread(telegram.send_message, f"🚨 Todas las posiciones ({len(results)}) han sido cerradas en Bitunix.")
+                    else:
+                        open_pos = await asyncio.to_thread(trader.get_open_positions)
+                        matched = [p for p in open_pos if target in p.get("symbol", "").upper()]
+                        if matched:
+                            for p in matched:
+                                res = await asyncio.to_thread(trader.close_position, p["positionId"], p.get("symbol"))
+                                await asyncio.to_thread(telegram.send_message, f"✔ {p.get('symbol')} cerrada en Bitunix: {res.get('msg')}")
+                        else:
+                            await asyncio.to_thread(telegram.send_message, f"⚠️ No se encontró posición abierta para {target} en Bitunix.")
+                else:
+                    await asyncio.to_thread(telegram.send_message, "ℹ️ Uso: /close <simbolo> (ej. /close LINKUSDT) o /close all")
 
             elif cmd == "/stats" or cmd == "/metricas":
                 s = ledger.get_stats()
@@ -203,9 +241,9 @@ async def process_telegram_actions(telegram: TelegramNotifier, client: BitunixCl
                 await asyncio.to_thread(telegram.send_message, "🗑️ Señal descartada.")
 
 
-# ── Cooldown: máximo 1 señal por par cada 60 minutos ──────────────────────────
+# ── Cooldown: máximo 1 señal por par cada 15 minutos (1 vela MTF) ────────────
 _last_signal_time: Dict[str, float] = {}
-SIGNAL_COOLDOWN_SECONDS = 3600  # 60 minutos
+SIGNAL_COOLDOWN_SECONDS = 900  # 15 minutos
 
 def _check_macro_trend(symbol: str, df_htf: pd.DataFrame, direction: str) -> Tuple[bool, str]:
     """
@@ -464,7 +502,13 @@ async def continuous_scanner_loop(client, smc, renderer, telegram, interval_seco
     loop_count = 0
     while True:
         try:
+            # 1. Reconciliar estado con posiciones reales en Bitunix
+            await asyncio.to_thread(position_monitor.reconcile_with_exchange)
+
+            # 2. Procesar botones interactivos y comandos de texto en Telegram
             await process_telegram_actions(telegram, client)
+
+            # 3. Escaneo de mercado y monitoreo de precios en vivo
             await scan_market(client, smc, renderer, telegram)
             loop_count += 1
 

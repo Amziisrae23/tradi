@@ -184,4 +184,75 @@ class BitunixTrader:
             logger.error(f"Excepción en Bitunix: {e}")
             return {"success": False, "mode": "REAL", "msg": str(e)}
 
+    def get_open_positions(self) -> list:
+        """Consulta posiciones abiertas directamente en Bitunix."""
+        if not self.is_configured():
+            return []
+        url = f"{self.base_url}/api/v1/futures/position/get_pending_positions"
+        nonce = uuid.uuid4().hex
+        timestamp = str(int(time.time() * 1000))
+        signature = self._generate_signature(nonce, timestamp, "")
+        headers = {
+            "api-key": self.api_key,
+            "nonce": nonce,
+            "timestamp": timestamp,
+            "sign": signature,
+            "Content-Type": "application/json"
+        }
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("code") == 0:
+                return data.get("data", [])
+            return []
+        except Exception as e:
+            logger.error(f"Error consultando posiciones en Bitunix: {e}")
+            return []
+
+    def close_position(self, position_id: str, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Cierra una posición abierta en Bitunix inmediatamente al precio de mercado (Flash Close)."""
+        if not self.is_configured():
+            return {"success": True, "mode": "SIMULATION", "msg": f"Posición {position_id} cerrada en simulación"}
+
+        url = f"{self.base_url}/api/v1/futures/trade/flash_close_position"
+        nonce = uuid.uuid4().hex
+        timestamp = str(int(time.time() * 1000))
+        payload = {"positionId": str(position_id)}
+        body_str = json.dumps(payload, separators=(',', ':'))
+        signature = self._generate_signature(nonce, timestamp, body_str)
+        headers = {
+            "api-key": self.api_key,
+            "nonce": nonce,
+            "timestamp": timestamp,
+            "sign": signature,
+            "Content-Type": "application/json"
+        }
+        try:
+            res = requests.post(url, data=body_str, headers=headers, timeout=8)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("code") == 0:
+                logger.info(f"✔ Posición {position_id} ({symbol or ''}) CERRADA en Bitunix con éxito")
+                return {"success": True, "mode": "REAL", "position_id": position_id, "msg": "Posición cerrada al mercado"}
+            else:
+                logger.error(f"Bitunix rechazó cerrar posición {position_id}: {data}")
+                return {"success": False, "mode": "REAL", "msg": data.get("msg", "Error cerrando posición")}
+        except Exception as e:
+            logger.error(f"Excepción al cerrar posición {position_id} en Bitunix: {e}")
+            return {"success": False, "mode": "REAL", "msg": str(e)}
+
+    def close_all_positions(self) -> list:
+        """Cierra todas las posiciones abiertas en Bitunix."""
+        positions = self.get_open_positions()
+        results = []
+        for p in positions:
+            pid = p.get("positionId")
+            sym = p.get("symbol")
+            if pid:
+                r = self.close_position(pid, sym)
+                results.append(r)
+        return results
+
 trader = BitunixTrader()
+
